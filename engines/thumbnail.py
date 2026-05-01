@@ -222,8 +222,9 @@ def compose_thumbnail(
     tagline: str = CHANNEL_TAGLINE,
     accent_color=(190, 18, 18),
     out_path: Path = None,
+    vertical: bool = False,
 ) -> Path:
-    W, H = 1280, 720
+    W, H = (1080, 1920) if vertical else (1280, 720)
     bg = background.copy()
     if bg.size != (W, H):
         bg = bg.resize((W, H), Image.LANCZOS)
@@ -304,7 +305,8 @@ def compose_thumbnail(
 # ════════════════════════════════════════════════════════
 
 def generate(api_key: str, title: str, out_path: Path,
-             variants: int = 1, on_log=None) -> dict:
+             variants: int = 1, vertical: bool = False,
+             on_log=None) -> dict:
     """
     Generate one or more thumbnails.
     Returns: {primary, variants:[paths], punchline, image_prompt}
@@ -324,16 +326,19 @@ def generate(api_key: str, title: str, out_path: Path,
     img_prompt = generate_image_prompt(api_key, title)
     log(f"      ↳ {img_prompt[:120]}{'...' if len(img_prompt) > 120 else ''}")
 
+    bg_w, bg_h = (1080, 1920) if vertical else (1280, 720)
+
     written = []
     for i in range(max(1, variants)):
         seed = (abs(hash((title, i))) % 999983) + 1
         log(f"   📥 background v{i+1} (seed={seed})...")
         try:
-            bg = pollinations_image(img_prompt, seed=seed)
+            bg = pollinations_image(img_prompt, seed=seed,
+                                    width=bg_w, height=bg_h)
         except Exception as e:
             log(f"      ⚠️  pollinations failed: {e}")
             if i == 0:
-                bg = Image.new("RGB", (1280, 720), (12, 10, 14))
+                bg = Image.new("RGB", (bg_w, bg_h), (12, 10, 14))
             else:
                 continue
 
@@ -343,7 +348,7 @@ def generate(api_key: str, title: str, out_path: Path,
             stem = out_path.stem
             target = out_path.with_name(f"{stem}_v{i+1}{out_path.suffix}")
 
-        compose_thumbnail(bg, punchline, out_path=target)
+        compose_thumbnail(bg, punchline, out_path=target, vertical=vertical)
         log(f"      ✅ {target.name}")
         written.append(str(target))
 

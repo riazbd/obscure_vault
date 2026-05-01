@@ -321,27 +321,70 @@ def _download(url: str, dest: Path) -> bool:
 
 
 def _process_clip_segment(src: Path, out: Path, duration: float,
-                          width: int, height: int) -> bool:
+                          width: int, height: int,
+                          motion: str = "pan") -> bool:
     """
     Trim/loop src to exact duration, scale+crop to W×H, apply colour grade.
+    motion: "off"   — flat scale+crop (legacy)
+            "pan"   — slow horizontal Ken-Burns drift (default)
+            "zoom"  — slow centered zoom-in (best for stills)
     """
+    if motion == "off":
+        vf = (f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+              f"crop={width}:{height},setsar=1,{COLOR_GRADE}")
+    elif motion == "zoom":
+        # Headroom + slow centered zoom from 1.0× to 1.10× over the chunk.
+        # `zoompan` only samples the first frame on video input — it really
+        # only suits stills; we expose it but default to "pan".
+        scaled_w = (int(width  * 1.20) // 2) * 2
+        scaled_h = (int(height * 1.20) // 2) * 2
+        zoom_max = 1.10
+        zoom_per_frame = (zoom_max - 1.0) / max(1.0, duration * 30)
+        vf = (f"scale={scaled_w}:{scaled_h}:force_original_aspect_ratio=increase,"
+              f"zoompan=z='min(zoom+{zoom_per_frame:.6f},{zoom_max})'"
+              f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+              f":d=1:fps=30:s={width}x{height},"
+              f"setsar=1,{COLOR_GRADE}")
+    else:
+        # "pan" — work on video too. Scale ~10% larger than canvas, then
+        # crop with a slow sinusoidal x offset so the picture drifts.
+        head_w = (int(width  * 1.12) // 2) * 2
+        head_h = (int(height * 1.12) // 2) * 2
+        # Phase signs alternate per call site; here we go with a positive
+        # cosine so the drift starts at left, sweeps right, returns near
+        # centre — looks natural at any duration.
+        vf = (
+            f"scale={head_w}:{head_h}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height}"
+            f":x='(iw-{width})/2*(1+cos(t*PI/{max(duration, 0.1):.3f}))'"
+            f":y='(ih-{height})/2',"
+            f"setsar=1,{COLOR_GRADE}"
+        )
+
     cmd = [
         "ffmpeg", "-y",
         "-stream_loop", "-1",
         "-i", str(src),
         "-t", f"{duration:.3f}",
-        "-vf", (f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-                f"crop={width}:{height},setsar=1,{COLOR_GRADE}"),
+        "-vf", vf,
         "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "23",
         "-r", "30", "-pix_fmt", "yuv420p",
         str(out),
     ]
     r = subprocess.run(cmd, capture_output=True)
-    return r.returncode == 0 and out.exists()
+    if r.returncode == 0 and out.exists():
+        return True
+    # If the fancy filter chain failed (rare — usually a weird source clip),
+    # retry with the flat scale+crop so the chunk still ships.
+    if motion != "off":
+        return _process_clip_segment(src, out, duration, width, height,
+                                     motion="off")
+    return False
 
 
 def build_footage_track(plan: list[dict], workspace: Path,
                         width: int, height: int,
+                        motion: str = "pan",
                         on_log=None) -> Path:
     """
     Download every plan clip, render per-chunk segments, concat.
@@ -382,7 +425,8 @@ def build_footage_track(plan: list[dict], workspace: Path,
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", str(seg),
             ], capture_output=True)
         else:
-            ok = _process_clip_segment(src, seg, chunk["duration"], width, height)
+            ok = _process_clip_segment(src, seg, chunk["duration"],
+                                       width, height, motion=motion)
             if not ok:
                 log(f"   ⚠️  process failed: {clip['id']}")
                 continue
@@ -427,6 +471,7 @@ def build(
     width: int = 1920,
     height: int = 1080,
     target_chunk_secs: float = 10.0,
+    motion: str = "pan",
     on_log=None,
 ) -> dict:
     log = on_log or (lambda m: None)
@@ -445,8 +490,9 @@ def build(
     plan = pick_clips_for_chunks(chunks, qpc, pexels_key, pixabay_key,
                                  on_log=log)
 
-    log("🎞️  Downloading + processing clips...")
-    track = build_footage_track(plan, workspace, width, height, on_log=log)
+    log(f"🎞️  Downloading + processing clips (motion={motion})...")
+    track = build_footage_track(plan, workspace, width, height,
+                                motion=motion, on_log=log)
 
     return {
         "track":  track,

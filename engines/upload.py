@@ -244,6 +244,7 @@ def publish(
     privacy_status: str = "private",
     publish_at: str | None = None,
     contains_synthetic_media: bool = True,
+    idea_id: str | None = None,
     on_progress=None,
     on_log=None,
 ) -> dict:
@@ -268,6 +269,13 @@ def publish(
             upload_caption(video_id, caption_srt_path, on_log=log)
         except Exception as e:
             log(f"   ⚠️  caption upload failed (non-fatal — needs verified account): {e}")
+
+    # Record for analytics tracking
+    try:
+        from engines import analytics
+        analytics.record_upload(video_id, title, tags, idea_id=idea_id)
+    except Exception:
+        pass
 
     return {
         "video_id": video_id,

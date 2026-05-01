@@ -175,7 +175,8 @@ def write_srt(cards: list[dict], path: Path):
     Path(path).write_text("\n".join(out), encoding="utf-8")
 
 
-ASS_TEMPLATE = """[Script Info]
+# Long-form: 1920x1080, smaller, lower-third
+ASS_TEMPLATE_LONG = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1920
 PlayResY: 1080
@@ -190,6 +191,22 @@ Style: Default,DejaVu Sans,58,&H00F8F0DC,&H000000FF,&H00000000,&H8C000000,1,0,0,
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
+# Shorts: 1080x1920, big bold cyan-on-black box, vertically centered
+ASS_TEMPLATE_SHORTS = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,DejaVu Sans,90,&H00FFFFFF,&H000000FF,&H00000000,&HCC000000,1,0,0,0,100,100,0,0,3,5,2,5,60,60,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
 
 def _ass_escape(text: str) -> str:
     # Escape for ASS dialog line: replace newlines with \N
@@ -197,11 +214,26 @@ def _ass_escape(text: str) -> str:
     return text.replace("\n", "\\N")
 
 
-def write_ass(cards: list[dict], path: Path):
-    body = ASS_TEMPLATE
+def write_ass(cards: list[dict], path: Path, *, style: str = "long"):
+    body = ASS_TEMPLATE_SHORTS if style == "shorts" else ASS_TEMPLATE_LONG
+    # Shorts: shorter line lengths so text fits the 1080-wide canvas
+    max_chars = 18 if style == "shorts" else MAX_CHARS_PER_LINE
     for c in cards:
-        text = "\\N".join(_wrap_two_lines(c["text"]))
-        text = _ass_escape(text)
+        words = re.sub(r"\s+", " ", c["text"]).strip().split()
+        lines, cur = [], ""
+        for w in words:
+            test = (cur + " " + w).strip()
+            if len(test) <= max_chars:
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+            if len(lines) == MAX_LINES:
+                break
+        if cur and len(lines) < MAX_LINES:
+            lines.append(cur)
+        text = _ass_escape("\\N".join(lines or [""]))
         body += (
             f"Dialogue: 0,{_ass_time(c['start'])},{_ass_time(c['end'])},"
             f"Default,,0,0,0,,{text}\n"
@@ -214,9 +246,12 @@ def write_ass(cards: list[dict], path: Path):
 # ════════════════════════════════════════════════════════
 
 def build(audio_path: Path, workspace: Path,
-          model_name: str = "base.en", on_log=None) -> dict:
+          model_name: str = "base.en",
+          style: str = "long",
+          on_log=None) -> dict:
     """
     Transcribe audio_path and write {workspace}/captions.ass + captions.srt.
+    style="shorts" → big vertical-friendly subtitle styling.
     Returns: {ass: Path, srt: Path, cards: int}
     Raises ImportError if faster-whisper is not installed.
     """
@@ -229,8 +264,8 @@ def build(audio_path: Path, workspace: Path,
 
     ass_path = Path(workspace) / "captions.ass"
     srt_path = Path(workspace) / "captions.srt"
-    write_ass(cards, ass_path)
+    write_ass(cards, ass_path, style=style)
     write_srt(cards, srt_path)
-    log(f"   ✅ {ass_path.name} + {srt_path.name}")
+    log(f"   ✅ {ass_path.name} + {srt_path.name} (style={style})")
 
     return {"ass": ass_path, "srt": srt_path, "cards": len(cards)}

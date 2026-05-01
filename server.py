@@ -56,6 +56,10 @@ def load_config():
         "auto_upload": False,
         "default_privacy": "private",
         "contains_synthetic_media": True,
+        "use_research": False,
+        "motion_effect": "pan",
+        "audio_polish": True,
+        "ducking_db": 8.0,
     }
 
 def save_config(data):
@@ -199,6 +203,7 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
                     pixabay_key=cfg.get("pixabay_api_key", ""),
                     width=W, height=H,
                     target_chunk_secs=float(cfg.get("chunk_seconds", 10.0)),
+                    motion=cfg.get("motion_effect", "pan"),
                     on_log=log,
                 )
                 footage_track    = br["track"]
@@ -378,7 +383,12 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
         # ── Step 5: Final assembly ───────────────────────
         progress(70, "Assembling final video...")
         final_mp4 = OUTPUT_DIR / f"{job_name}.mp4"
-        music_vol = cfg.get("music_volume", 0.12)
+        music_vol     = cfg.get("music_volume", 0.12)
+        audio_polish  = cfg.get("audio_polish", True)
+        duck_db       = float(cfg.get("ducking_db", 8.0))      # dB the music
+                                                                # drops when voice is loud
+        # Sidechaincompress maps dB → ratio. ~8 dB of duck = ratio ~6-8.
+        duck_ratio    = max(2.0, min(20.0, duck_db / 1.0))
 
         # If captions exist, copy the .ass into the workspace so we can
         # reference it by relative name (cwd=workspace) and avoid the
@@ -387,7 +397,8 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
         if captions_ass:
             sub_chain = "subtitles=captions.ass,"
 
-        # Filter graph: video subtitle burn-in + (optional) music mix.
+        # Filter graph: video subtitle burn-in + voice loudnorm +
+        # (optional) sidechain-ducked music mix.
         filter_parts = []
         if sub_chain:
             filter_parts.append(f"[0:v]{sub_chain[:-1]}[v]")
@@ -396,15 +407,33 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
             video_map = ["-map", "0:v"]
 
         if music_path:
-            audio_in  = ["-i", str(vo_path), "-i", str(music_path)]
-            filter_parts.append(
-                f"[2:a]aloop=loop=-1:size=2e+09,volume={music_vol}[m];"
-                f"[1:a][m]amix=inputs=2:duration=first:dropout_transition=3[aout]"
-            )
+            audio_in = ["-i", str(vo_path), "-i", str(music_path)]
+            if audio_polish:
+                # Voice → -16 LUFS, music ducks under voice via sidechain.
+                # asplit so we can both feed the sidechain and keep the
+                # voice signal for the final amix.
+                filter_parts.append(
+                    f"[1:a]loudnorm=I=-16:TP=-1.5:LRA=11,asplit=2[voice][voice_sc];"
+                    f"[2:a]aloop=loop=-1:size=2e+09,volume={music_vol}[m_raw];"
+                    f"[m_raw][voice_sc]sidechaincompress="
+                    f"threshold=0.05:ratio={duck_ratio:.1f}:attack=20:release=400[m_ducked];"
+                    f"[voice][m_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]"
+                )
+            else:
+                filter_parts.append(
+                    f"[2:a]aloop=loop=-1:size=2e+09,volume={music_vol}[m];"
+                    f"[1:a][m]amix=inputs=2:duration=first:dropout_transition=3[aout]"
+                )
             audio_map = ["-map", "[aout]"]
         else:
-            audio_in  = ["-i", str(vo_path)]
-            audio_map = ["-map", "1:a"]
+            audio_in = ["-i", str(vo_path)]
+            if audio_polish:
+                filter_parts.append(
+                    "[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[aout]"
+                )
+                audio_map = ["-map", "[aout]"]
+            else:
+                audio_map = ["-map", "1:a"]
 
         cmd = ["ffmpeg", "-y", "-i", str(footage_track), *audio_in]
         if filter_parts:
@@ -581,8 +610,18 @@ TIMESTAMPS
                         privacy_status=cfg.get("default_privacy", "private"),
                         contains_synthetic_media=cfg.get(
                             "contains_synthetic_media", True),
+                        idea_id=cfg.get("_idea_id"),
                         on_log=log,
                     )
+                    # If this came from an idea, mark it produced.
+                    if cfg.get("_idea_id"):
+                        try:
+                            from engines import ideas as _I
+                            _I.update_status(
+                                cfg["_idea_id"], "produced",
+                                video_id=upload_result.get("video_id"))
+                        except Exception:
+                            pass
                     log(f"   ✅ live at {upload_result['url']}")
                 else:
                     log("⚠️  auto-upload on but YouTube not authorized; skipping")
@@ -744,6 +783,260 @@ def get_description(job_name):
         return jsonify({"description": desc_path.read_text()})
     return jsonify({"description": ""})
 
+
+# ════════════════════════════════════════════════════════
+#  Shorts pipeline (vertical 1080x1920, 30–55s, hook-only)
+# ════════════════════════════════════════════════════════
+
+def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
+                              cfg: dict):
+    import requests as req_lib
+    from PIL import Image
+    import edge_tts
+
+    job = jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[{job_id}] {msg}")
+
+    def progress(pct, stage):
+        job["progress"] = pct
+        job["stage"] = stage
+        log(f"[{pct}%] {stage}")
+
+    try:
+        slug = re.sub(r"[^\w\s-]", "", idea.lower())
+        slug = re.sub(r"[\s_-]+", "_", slug)[:40]
+        ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+        job_name = f"short_{ts}_{slug}"
+        workspace = WORKSPACE / job_name
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        W, H = 1080, 1920   # vertical
+
+        # ── Step 1: Generate the 100-130 word script ─────
+        progress(5, "Drafting Short script...")
+        from engines import script as script_engine
+        api_key = cfg.get("openrouter_api_key", "").strip()
+        if not api_key:
+            raise RuntimeError("OpenRouter key required for Shorts.")
+
+        sc = script_engine.generate_short_script(api_key, idea,
+                                                 target_words=target_words,
+                                                 on_log=log)
+        title  = sc["working_title"]
+        script_text = sc["script"]
+        if len(script_text) < 60:
+            raise RuntimeError("Short script came back too tiny — try a different topic.")
+        (workspace / "script.txt").write_text(script_text)
+
+        # ── Step 2: Voiceover ────────────────────────────
+        progress(15, "Generating voiceover...")
+        vo_path = workspace / "voiceover.mp3"
+        async def _tts():
+            comm = edge_tts.Communicate(script_text,
+                                        cfg.get("tts_voice", "en-US-GuyNeural"))
+            await comm.save(str(vo_path))
+        asyncio.run(_tts())
+
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(vo_path)],
+            capture_output=True, text=True,
+        )
+        duration = float(r.stdout.strip())
+        log(f"✅ {duration:.1f}s narration")
+        job["duration"] = f"0:{int(round(duration)):02d}"
+
+        # ── Step 3: Captions (always on for Shorts) ──────
+        captions_ass = None
+        try:
+            from engines import captions as cap_engine
+            if cap_engine.is_available():
+                progress(25, "Burning vertical captions...")
+                cap_result = cap_engine.build(
+                    vo_path, workspace,
+                    model_name=cfg.get("caption_model", "base.en"),
+                    style="shorts",
+                    on_log=log,
+                )
+                captions_ass = cap_result["ass"]
+                shutil.copyfile(cap_result["srt"], OUTPUT_DIR / f"{job_name}.srt")
+            else:
+                log("⚠️  faster-whisper not installed — skipping caption burn-in")
+        except Exception as e:
+            log(f"⚠️  caption build failed: {e}")
+
+        # ── Step 4: Smart B-roll (vertical) ──────────────
+        progress(35, "Fetching footage (vertical)...")
+        footage_track = None
+        if cfg.get("openrouter_api_key") and cfg.get("pexels_api_key"):
+            try:
+                from engines import footage as footage_engine
+                br = footage_engine.build(
+                    script=script_text, duration=duration, workspace=workspace,
+                    openrouter_key=cfg["openrouter_api_key"],
+                    pexels_key=cfg["pexels_api_key"],
+                    pixabay_key=cfg.get("pixabay_api_key", ""),
+                    width=W, height=H,
+                    target_chunk_secs=8.0,
+                    motion=cfg.get("motion_effect", "pan"),
+                    on_log=log,
+                )
+                footage_track = br["track"]
+            except Exception as e:
+                log(f"⚠️  smart b-roll failed: {e}")
+
+        if footage_track is None:
+            # Fallback to a dark vertical card
+            fallback = workspace / "processed" / "fallback.mp4"
+            fallback.parent.mkdir(exist_ok=True)
+            subprocess.run([
+                "ffmpeg", "-y", "-f", "lavfi",
+                "-i", f"color=c=0x0a0a0a:size={W}x{H}:rate=30:duration={duration}",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(fallback),
+            ], capture_output=True)
+            footage_track = fallback
+
+        # ── Step 5: Final assembly ───────────────────────
+        progress(70, "Rendering Short...")
+        final_mp4 = OUTPUT_DIR / f"{job_name}.mp4"
+        sub_chain = "subtitles=captions.ass," if captions_ass else ""
+        audio_polish = cfg.get("audio_polish", True)
+
+        filter_parts = []
+        if sub_chain:
+            filter_parts.append(f"[0:v]{sub_chain[:-1]}[v]")
+            video_map = ["-map", "[v]"]
+        else:
+            video_map = ["-map", "0:v"]
+
+        # Shorts: no music, but still loudnorm the voice when polish is on.
+        if audio_polish:
+            filter_parts.append("[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[aout]")
+            audio_map = ["-map", "[aout]"]
+        else:
+            audio_map = ["-map", "1:a"]
+
+        cmd = ["ffmpeg", "-y", "-i", str(footage_track), "-i", str(vo_path)]
+        if filter_parts:
+            cmd += ["-filter_complex", ";".join(filter_parts)]
+        cmd += [
+            "-t", f"{duration:.3f}",
+            *video_map, *audio_map,
+            "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart", "-pix_fmt", "yuv420p",
+            str(final_mp4),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                cwd=str(workspace))
+        if result.returncode != 0:
+            raise RuntimeError(f"FFmpeg failed:\n{result.stderr[-1500:]}")
+
+        # ── Step 6: Vertical thumbnail ───────────────────
+        progress(88, "Generating vertical thumbnail...")
+        thumb = OUTPUT_DIR / f"{job_name}_thumbnail.jpg"
+        try:
+            from engines import thumbnail as thumb_engine
+            thumb_engine.generate(api_key, title, thumb, vertical=True,
+                                  on_log=log)
+        except Exception as e:
+            log(f"⚠️  vertical thumbnail failed: {e}")
+
+        # ── Step 7: Metadata ─────────────────────────────
+        progress(95, "Saving metadata...")
+        description = (
+            f"{title}\n\n"
+            f"{script_text[:200]}...\n\n"
+            "🔔 Subscribe to Obscura Vault for buried history.\n\n"
+            "#Shorts #ObscuraVault #HiddenHistory #DarkHistory"
+        )
+        tags = ["shorts", "obscura vault", "hidden history",
+                "dark history", "untold history",
+                *[w.lower() for w in title.split() if len(w) > 3]]
+        meta = {"title": title, "description": description,
+                "tags": list(dict.fromkeys(tags)), "category": "27",
+                "duration_s": round(duration), "shorts": True}
+        (workspace / "metadata.json").write_text(json.dumps(meta, indent=2))
+        (workspace / "description.txt").write_text(description)
+
+        # ── Step 8: Auto-upload (if enabled) ─────────────
+        upload_result = None
+        if cfg.get("auto_upload"):
+            try:
+                from engines import upload as up
+                if up.is_installed() and up.has_token():
+                    progress(98, "Uploading Short...")
+                    srt_sib = OUTPUT_DIR / f"{job_name}.srt"
+                    upload_result = up.publish(
+                        final_mp4, title=title, description=description,
+                        tags=meta["tags"],
+                        thumbnail_path=(thumb if thumb.exists() else None),
+                        caption_srt_path=(srt_sib if srt_sib.exists() else None),
+                        privacy_status=cfg.get("default_privacy", "private"),
+                        contains_synthetic_media=cfg.get(
+                            "contains_synthetic_media", True),
+                        idea_id=cfg.get("_idea_id"),
+                        on_log=log,
+                    )
+            except Exception as e:
+                log(f"⚠️  auto-upload failed: {e}")
+
+        mb = final_mp4.stat().st_size / 1024 / 1024
+        job["result"] = {
+            "video":       final_mp4.name,
+            "thumbnail":   thumb.name,
+            "description": description,
+            "tags":        meta["tags"],
+            "duration":    f"0:{int(round(duration)):02d}",
+            "size_mb":     round(mb, 1),
+            "job_name":    job_name,
+            "youtube":     upload_result,
+            "shorts":      True,
+        }
+        progress(100, "Short ready! 🎬")
+        job["status"] = "done"
+
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc())
+
+
+@app.route("/api/run-short", methods=["POST"])
+def run_short():
+    data = request.json or {}
+    idea = (data.get("idea") or "").strip()
+    target_words = int(data.get("target_words") or 110)
+
+    if len(idea) < 8:
+        return jsonify({"error": "Idea too short (min 8 chars)."}), 400
+    if not (60 <= target_words <= 220):
+        return jsonify({"error": "target_words must be between 60 and 220"}), 400
+
+    cfg = load_config()
+    if not cfg.get("openrouter_api_key", "").strip():
+        return jsonify({"error": "OpenRouter key required."}), 400
+
+    for jid, j in jobs.items():
+        if j["status"] == "running":
+            return jsonify({"error": "A video is already being generated."}), 409
+
+    job_id = "sh_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    jobs[job_id] = {
+        "status": "running", "progress": 0, "stage": "Starting Short...",
+        "log": [], "result": None, "error": None, "duration": None,
+    }
+    threading.Thread(target=run_short_pipeline_thread,
+                     args=(job_id, idea, target_words, cfg),
+                     daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
 # ── Run pipeline ─────────────────────────────────────────
 @app.route("/api/run", methods=["POST"])
 def run_pipeline():
@@ -811,7 +1104,8 @@ def validate_openrouter():
 script_jobs = {}   # job_id -> {status, log, result, error}
 
 
-def _run_script_job(job_id: str, idea: str, minutes: float, api_key: str):
+def _run_script_job(job_id: str, idea: str, minutes: float, api_key: str,
+                    use_research: bool = False):
     from engines import script as script_engine
     from engines import seo    as seo_engine
     job = script_jobs[job_id]
@@ -824,7 +1118,17 @@ def _run_script_job(job_id: str, idea: str, minutes: float, api_key: str):
         if not api_key:
             raise RuntimeError("OpenRouter key not set in Settings.")
 
-        sc = script_engine.generate_script(api_key, idea, minutes, on_log=log)
+        research_pack = None
+        if use_research:
+            from engines import research as research_engine
+            research_pack = research_engine.build_research_pack(
+                api_key, idea, on_log=log)
+
+        sc = script_engine.generate_script(
+            api_key, idea, minutes,
+            research_pack=research_pack,
+            on_log=log,
+        )
 
         # Use planned duration to stamp chapters; the real audio duration
         # will be re-stamped by the video pipeline if it differs significantly.
@@ -861,6 +1165,7 @@ def generate_script_route():
     data    = request.json or {}
     idea    = (data.get("idea") or "").strip()
     minutes = float(data.get("minutes") or 10.0)
+    use_research = bool(data.get("research", False))
 
     if len(idea) < 8:
         return jsonify({"error": "Idea is too short (min 8 chars)."}), 400
@@ -878,7 +1183,7 @@ def generate_script_route():
     }
     threading.Thread(
         target=_run_script_job,
-        args=(job_id, idea, minutes, api_key),
+        args=(job_id, idea, minutes, api_key, use_research),
         daemon=True,
     ).start()
     return jsonify({"job_id": job_id})
@@ -1260,8 +1565,382 @@ def yt_upload_status(job_id):
     })
 
 
+# ════════════════════════════════════════════════════════
+#  Idea engine routes
+# ════════════════════════════════════════════════════════
+
+idea_jobs = {}   # harvest jobs
+
+
+def _run_harvest(job_id: str, params: dict, openrouter_key: str):
+    from engines import ideas as I
+    job = idea_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[ideas {job_id}] {msg}")
+
+    try:
+        result = I.run_harvest(
+            yt_seeds=params.get("yt_seeds") or None,
+            subreddits=params.get("subreddits") or None,
+            include_wikipedia=bool(params.get("include_wikipedia", True)),
+            score_with_openrouter_key=openrouter_key,
+            niche=params.get("niche") or I.DEFAULT_NICHE,
+            on_log=log,
+        )
+        job["result"] = result
+        job["status"] = "done"
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/ideas/harvest", methods=["POST"])
+def ideas_harvest():
+    data = request.json or {}
+    cfg  = load_config()
+    job_id = "h_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    idea_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(
+        target=_run_harvest,
+        args=(job_id, data, cfg.get("openrouter_api_key", "").strip()),
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/ideas/harvest-status/<job_id>")
+def ideas_harvest_status(job_id):
+    job = idea_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-30:],
+        "result": job["result"],
+        "error":  job["error"],
+    })
+
+
+@app.route("/api/ideas/list", methods=["GET"])
+def ideas_list():
+    from engines import ideas as I
+    items = I.list_all()
+    status_filter = request.args.get("status", "")
+    if status_filter:
+        items = [it for it in items if it.get("status") == status_filter]
+    return jsonify(items)
+
+
+@app.route("/api/ideas/<idea_id>/status", methods=["POST"])
+def ideas_set_status(idea_id):
+    from engines import ideas as I
+    new_status = (request.json or {}).get("status", "")
+    if new_status not in {"pending", "approved", "rejected", "produced"}:
+        return jsonify({"error": "bad status"}), 400
+    patch = {}
+    for k in ("job_name", "video_id"):
+        if k in (request.json or {}):
+            patch[k] = request.json[k]
+    it = I.update_status(idea_id, new_status, **patch)
+    if not it:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(it)
+
+
+@app.route("/api/ideas/<idea_id>", methods=["DELETE"])
+def ideas_delete(idea_id):
+    from engines import ideas as I
+    if I.delete(idea_id):
+        return jsonify({"ok": True})
+    return jsonify({"error": "not found"}), 404
+
+
+# Approve & Generate: chain idea → script → video pipeline.
+def _run_idea_to_video(job_id: str, idea: dict, minutes: float, cfg: dict):
+    from engines import script as script_engine
+    from engines import seo    as seo_engine
+    from engines import ideas  as I
+
+    job = script_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[idea-pipe {job_id}] {msg}")
+
+    try:
+        api_key = cfg.get("openrouter_api_key", "").strip()
+        if not api_key:
+            raise RuntimeError("OpenRouter key missing")
+
+        log(f"📜 generating script for: {idea['title'][:90]}")
+        research_pack = None
+        if cfg.get("use_research", False):
+            from engines import research as research_engine
+            research_pack = research_engine.build_research_pack(
+                api_key, idea["title"], on_log=log)
+
+        sc = script_engine.generate_script(api_key, idea["title"], minutes,
+                                           research_pack=research_pack,
+                                           on_log=log)
+        total_secs = (sc["word_count"] / script_engine.WORDS_PER_MINUTE) * 60
+        seo = seo_engine.build_seo_pack(api_key, idea["title"], sc["outline"],
+                                        total_secs, on_log=log)
+
+        # Now kick off the actual video pipeline
+        log("🎬 starting video pipeline...")
+        pipeline_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        jobs[pipeline_id] = {
+            "status": "running", "progress": 0, "stage": "Starting...",
+            "log": [], "result": None, "error": None, "duration": None,
+        }
+        # Carry the idea_id transiently so auto-upload can record it
+        # for analytics token-signal correlation.
+        pipeline_cfg = dict(cfg)
+        pipeline_cfg["_idea_id"] = idea["id"]
+        t = threading.Thread(
+            target=run_pipeline_thread,
+            args=(pipeline_id, seo["title"], sc["script"], pipeline_cfg),
+            daemon=True,
+        )
+        t.start()
+
+        # Mark idea as approved → produced (we don't wait for the
+        # pipeline to finish; UI tracks the pipeline separately).
+        I.update_status(idea["id"], "approved",
+                        pipeline_job=pipeline_id,
+                        scripted_title=seo["title"])
+        job["result"] = {
+            "title":       seo["title"],
+            "pipeline_id": pipeline_id,
+            "word_count":  sc["word_count"],
+        }
+        job["status"] = "done"
+        log(f"   ✅ pipeline {pipeline_id} running in background")
+
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+# ════════════════════════════════════════════════════════
+#  Analytics routes
+# ════════════════════════════════════════════════════════
+
+analytics_jobs = {}
+
+
+def _run_analytics_refresh(job_id: str):
+    from engines import analytics
+    job = analytics_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[analytics {job_id}] {msg}")
+
+    try:
+        result = analytics.refresh_metrics(on_log=log)
+        job["result"] = result
+        job["status"] = "done"
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/analytics/refresh", methods=["POST"])
+def analytics_refresh():
+    job_id = "an_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    analytics_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(target=_run_analytics_refresh, args=(job_id,),
+                     daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/analytics/refresh-status/<job_id>")
+def analytics_refresh_status(job_id):
+    job = analytics_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-30:],
+        "result": job["result"],
+        "error":  job["error"],
+    })
+
+
+@app.route("/api/analytics/list", methods=["GET"])
+def analytics_list():
+    from engines import analytics
+    return jsonify({
+        "uploads": analytics.list_uploads(),
+        "metrics": analytics.list_metrics(),
+    })
+
+
+@app.route("/api/analytics/signals", methods=["GET"])
+def analytics_signals():
+    from engines import analytics
+    return jsonify(analytics.compute_token_signals())
+
+
+@app.route("/api/ideas/<idea_id>/produce", methods=["POST"])
+def ideas_produce(idea_id):
+    from engines import ideas as I
+    minutes = float((request.json or {}).get("minutes") or 10.0)
+
+    items = [it for it in I.list_all() if it["id"] == idea_id]
+    if not items:
+        return jsonify({"error": "idea not found"}), 404
+    idea = items[0]
+
+    cfg = load_config()
+    if not cfg.get("openrouter_api_key", "").strip():
+        return jsonify({"error": "OpenRouter key missing"}), 400
+
+    # Check no other pipeline running
+    for jid, j in jobs.items():
+        if j["status"] == "running":
+            return jsonify({"error": "A video is already being generated."}), 409
+
+    job_id = "ip_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    script_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(
+        target=_run_idea_to_video,
+        args=(job_id, idea, minutes, cfg),
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id})
+
+
+# ════════════════════════════════════════════════════════
+#  Scheduler routes
+# ════════════════════════════════════════════════════════
+
+def _scheduler_produce_idea(idea: dict, minutes: float):
+    """Runtime callback the scheduler uses to start the produce flow."""
+    cfg = load_config()
+    job_id = "ip_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    script_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(
+        target=_run_idea_to_video,
+        args=(job_id, idea, minutes, cfg),
+        daemon=True,
+    ).start()
+
+
+def _scheduler_runtime():
+    return {
+        "pipeline_jobs": lambda: jobs,
+        "produce_idea":  _scheduler_produce_idea,
+    }
+
+
+@app.route("/api/dashboard", methods=["GET"])
+def dashboard():
+    from engines import analytics, ideas as I, scheduler as sched
+    cfg = load_config()
+
+    metrics = analytics.list_metrics()
+    by_vid  = (metrics.get("by_video") or {})
+    uploads = analytics.list_uploads()
+    signals = analytics.compute_token_signals()
+    sched_state = sched.get_state(cfg.get("scheduler", {}))
+    all_ideas   = I.list_all()
+
+    # Channel summary
+    total_views = sum((m.get("views") or 0) for m in by_vid.values())
+    total_subs  = sum((m.get("subs_gained") or 0) for m in by_vid.values())
+    ctrs = [m.get("ctr") for m in by_vid.values() if m.get("ctr")]
+    avd  = [m.get("avg_view_percent") for m in by_vid.values() if m.get("avg_view_percent")]
+    avg_ctr = round(sum(ctrs) / len(ctrs), 2) if ctrs else 0
+    avg_avd = round(sum(avd) / len(avd), 2) if avd else 0
+
+    # Recent uploads (last 10)
+    recent = sorted(uploads, key=lambda u: u.get("uploaded_at", ""),
+                    reverse=True)[:10]
+    for u in recent:
+        u["metrics"] = by_vid.get(u.get("video_id"), {})
+
+    # Top + bottom token signals (10 each)
+    tok_items = sorted(
+        signals.get("tokens", {}).items(),
+        key=lambda x: x[1]["multiplier"], reverse=True,
+    )
+    top_tokens    = [{"token": t, **m} for t, m in tok_items[:10]]
+    bottom_tokens = [{"token": t, **m} for t, m in tok_items[-10:]
+                     if m.get("multiplier", 1) < 1.0]
+
+    # Idea pool snapshot
+    by_status = {"pending": 0, "approved": 0, "produced": 0, "rejected": 0}
+    for it in all_ideas:
+        by_status[it.get("status", "pending")] = by_status.get(
+            it.get("status", "pending"), 0) + 1
+
+    # Pipeline activity today
+    today = datetime.now().strftime("%Y%m%d")
+    todays_jobs = [j for jid, j in jobs.items() if jid.startswith(today)]
+    done = sum(1 for j in todays_jobs if j.get("status") == "done")
+    err  = sum(1 for j in todays_jobs if j.get("status") == "error")
+    running = sum(1 for j in todays_jobs if j.get("status") == "running")
+
+    return jsonify({
+        "channel": {
+            "uploads_tracked":  len(uploads),
+            "total_views":      total_views,
+            "subs_gained":      total_subs,
+            "avg_ctr":          avg_ctr,
+            "avg_view_percent": avg_avd,
+            "metrics_refreshed_at": metrics.get("refreshed_at"),
+        },
+        "recent_uploads":  recent,
+        "top_tokens":      top_tokens,
+        "bottom_tokens":   bottom_tokens,
+        "idea_pool":       by_status,
+        "scheduler":       sched_state["tasks"],
+        "today_pipeline":  {"done": done, "errors": err, "running": running,
+                            "total": len(todays_jobs)},
+    })
+
+
+@app.route("/api/scheduler/state", methods=["GET"])
+def scheduler_state():
+    from engines import scheduler as sched
+    cfg = load_config()
+    return jsonify(sched.get_state(cfg.get("scheduler", {})))
+
+
+@app.route("/api/scheduler/trigger/<task_name>", methods=["POST"])
+def scheduler_trigger(task_name):
+    from engines import scheduler as sched
+    res = sched.trigger_now(task_name, load_config, _scheduler_runtime())
+    if "error" in res:
+        return jsonify(res), 400
+    return jsonify(res)
+
+
 if __name__ == "__main__":
     import webbrowser
+    from engines import scheduler as sched
+    sched.start(load_config, _scheduler_runtime())
     print("\n" + "═"*55)
     print("  OBSCURA VAULT — Starting UI Server")
     print("  Opening http://localhost:5050 in your browser...")

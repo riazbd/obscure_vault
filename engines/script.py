@@ -55,7 +55,16 @@ def _violates_banned(text: str) -> str | None:
     return None
 
 
-def _outline_prompt(idea: str, minutes: float, target_words: int) -> list:
+def _outline_prompt(idea: str, minutes: float, target_words: int,
+                    research_block: str = "") -> list:
+    research_section = ""
+    if research_block:
+        research_section = (
+            f"\n{research_block}\n\n"
+            "Use ONLY facts from the RESEARCH PACK above. For every key_fact "
+            "you list, reference its [fact_id] in square brackets at the end. "
+            "Do not invent additional facts.\n"
+        )
     return [
         {"role": "system", "content":
             "You are a senior YouTube documentary writer. Output ONLY valid JSON."},
@@ -64,7 +73,7 @@ Channel context:
 {CHANNEL_BRAND}
 
 Topic / idea: {idea}
-
+{research_section}
 Target video length: {minutes:.1f} minutes (~{target_words} words of narration).
 
 Produce a beat sheet as JSON with this exact shape:
@@ -78,7 +87,7 @@ Produce a beat sheet as JSON with this exact shape:
       "id": 1,
       "label": "short label e.g. 'Background'",
       "summary": "what this act covers in 1-2 sentences",
-      "key_facts": ["concrete fact or claim", "..."],
+      "key_facts": ["concrete fact ending with [f3]", "..."],
       "approx_seconds": 90
     }}
   ],
@@ -96,7 +105,8 @@ Rules:
     ]
 
 
-def _draft_prompt(idea: str, outline: dict, target_words: int) -> list:
+def _draft_prompt(idea: str, outline: dict, target_words: int,
+                  research_block: str = "") -> list:
     outline_str = ""
     for act in outline.get("acts", []):
         facts = "\n    - " + "\n    - ".join(act.get("key_facts", []))
@@ -107,13 +117,18 @@ def _draft_prompt(idea: str, outline: dict, target_words: int) -> list:
             f"\n  Key facts:{facts}\n"
         )
 
+    research_section = (f"\n{research_block}\n\nGround every concrete claim in the research pack. "
+                        "Drop the [fX] markers from the prose — they belong only in the outline. "
+                        "If the pack doesn't support a claim, omit that claim.\n"
+                        if research_block else "")
+
     return [
         {"role": "system", "content":
             f"You are a senior YouTube documentary writer for {CHANNEL_BRAND}. "
             "Write narration the voice will read aloud — nothing else."},
         {"role": "user", "content": f"""
 Topic: {idea}
-
+{research_section}
 Working title: {outline.get('working_title','')}
 Hook: {outline.get('hook','')}
 Promise: {outline.get('promise','')}
@@ -129,7 +144,7 @@ Write the FULL narration as continuous prose. Hard requirements:
 - Cover every act in order, weaving the key facts in naturally.
 - Include subtle retention hooks at roughly 25%, 50%, 75% of the way through (mini-cliffhangers like "but that wasn't even the strangest part…").
 - Vary sentence length. Median sentence ≤ 22 words. No paragraph longer than 5 sentences.
-- Plain prose only. NO act/chapter headings, NO bracketed stage directions, NO speaker labels, NO music cues.
+- Plain prose only. NO act/chapter headings, NO bracketed stage directions, NO speaker labels, NO music cues, NO inline citation tags like [f1].
 - No "as an AI" or meta-commentary.
 - End with the CTA in the last paragraph.
 
@@ -161,11 +176,12 @@ def _quality_check(text: str, target_words: int) -> tuple[bool, str]:
     return True, "ok"
 
 
-def generate_outline(api_key: str, idea: str, minutes: float = 10.0) -> dict:
+def generate_outline(api_key: str, idea: str, minutes: float = 10.0,
+                     research_block: str = "") -> dict:
     target = target_word_count(minutes)
     res = llm.call(
         api_key,
-        _outline_prompt(idea, minutes, target),
+        _outline_prompt(idea, minutes, target, research_block=research_block),
         json_mode=True,
         temperature=0.6,
         max_tokens=2000,
@@ -176,15 +192,72 @@ def generate_outline(api_key: str, idea: str, minutes: float = 10.0) -> dict:
     return outline
 
 
+def generate_short_script(api_key: str, idea: str,
+                          target_words: int = 110,
+                          on_log=None) -> dict:
+    """
+    One-shot script for a 30–55 second YouTube Short.
+    Returns: {script, word_count, model, working_title}
+    """
+    log = on_log or (lambda m: None)
+    log(f"📜 Drafting Short ({target_words} words target)...")
+
+    msgs = [
+        {"role": "system", "content":
+            f"You are a senior YouTube Shorts writer for {CHANNEL_BRAND} "
+            "Output ONLY valid JSON."},
+        {"role": "user", "content": f"""
+Topic: {idea}
+
+Write a {target_words}-word YouTube Short narration. Hard rules:
+- Hook in the FIRST sentence (≤12 words). Make the viewer want to know more.
+- Pure prose narration (NOT a script with headers/cues).
+- Cinematic register: calm, ominous, authoritative.
+- Build to a single payoff revelation in the last sentence.
+- NO outro, NO subscribe pitch, NO "in this video".
+- ±10 % of {target_words} words.
+
+Also produce a 4-6 word working title.
+
+Return JSON:
+{{
+  "working_title": "string",
+  "script":        "the {target_words}-word narration"
+}}
+""".strip()}]
+
+    res = llm.call(api_key, msgs, json_mode=True, temperature=0.8,
+                   max_tokens=1200)
+    data = res["json"] or {}
+    script_text = (data.get("script") or "").strip()
+    title       = (data.get("working_title") or idea[:60]).strip()
+    wc = _word_count(script_text)
+    log(f"   ✅ {wc} words via {res['model']} — {title!r}")
+    return {
+        "script":         script_text,
+        "word_count":     wc,
+        "model":          res["model"],
+        "working_title":  title,
+    }
+
+
 def generate_script(api_key: str, idea: str, minutes: float = 10.0,
+                    research_pack: dict | None = None,
                     on_log=None) -> dict:
     """
-    Returns: {outline, script, word_count, model, attempts}
+    Returns: {outline, script, word_count, model, attempts, research_pack}
     """
     log = on_log or (lambda m: None)
 
+    research_block = ""
+    if research_pack and research_pack.get("facts"):
+        from engines import research as research_engine
+        research_block = research_engine.render_pack_for_prompt(research_pack)
+        log(f"📚 grounding script in {len(research_pack['facts'])} researched facts")
+
     log(f"📜 Outlining ({minutes:.1f} min target)...")
-    outline = generate_outline(api_key, idea, minutes)
+    outline = generate_outline(api_key, idea, minutes,
+                               research_block=research_block)
     log(f"   ✅ {len(outline.get('acts', []))} acts, working title: {outline.get('working_title','?')}")
 
     target = target_word_count(minutes)
@@ -194,7 +267,8 @@ def generate_script(api_key: str, idea: str, minutes: float = 10.0,
     for attempt in range(3):
         attempts += 1
         log(f"✍️  Drafting (attempt {attempts}, target ~{target} words)...")
-        msgs = _draft_prompt(idea, outline, target)
+        msgs = _draft_prompt(idea, outline, target,
+                             research_block=research_block)
 
         if attempt == 1 and script_text:
             wc = _word_count(script_text)
