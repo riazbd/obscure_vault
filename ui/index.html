@@ -754,6 +754,29 @@ input[type="range"]::-webkit-slider-thumb {
               <pre id="ai-log" style="display:none;max-height:160px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:10px;font-size:11px;color:var(--text-dim);margin-top:8px;white-space:pre-wrap"></pre>
             </div>
 
+            <!-- Shorts -->
+            <div class="card" style="border:1px solid #4d3300">
+              <div class="card-title" style="color:#e6a23a">📱 Make a Short (vertical 30–55 s)</div>
+              <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+                Drop a topic — get a vertical 1080×1920 video with hook-only narration,
+                burned-in big captions, vertical thumbnail, and #Shorts tagging.
+                Renders in ~5–10 minutes on the T480.
+              </p>
+              <div class="form-group">
+                <label class="form-label">Topic</label>
+                <input class="form-input" id="short-idea" type="text"
+                  placeholder="e.g. The Soviet bunker found in 2018 with sealed orders inside">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Target word count (≈ 1 word = 0.42 s)</label>
+                <input class="form-input" id="short-words" type="number" min="60" max="220" step="10" value="110" style="max-width:160px">
+              </div>
+              <button class="btn btn-gold btn-full" id="short-gen-btn" onclick="generateShort()">
+                Generate Short
+              </button>
+              <div id="short-status" style="margin-top:10px;font-size:12px;color:var(--text-dim)"></div>
+            </div>
+
             <!-- Input -->
             <div class="card">
               <div class="card-title">Video Input</div>
@@ -1409,6 +1432,42 @@ async function startGeneration() {
     toast('Cannot reach server. Is server.py running?', 'error');
     resetGenBtn();
   }
+}
+
+async function generateShort() {
+  const idea = document.getElementById('short-idea').value.trim();
+  const words = parseInt(document.getElementById('short-words').value || '110');
+  if (idea.length < 8) { toast('Enter a topic first.', 'error'); return; }
+
+  const btn = document.getElementById('short-gen-btn');
+  const stat = document.getElementById('short-status');
+  btn.disabled = true; btn.textContent = 'Working...';
+  stat.textContent = 'Starting Shorts pipeline...';
+
+  let r, d;
+  try {
+    r = await fetch('/api/run-short', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ idea, target_words: words }),
+    });
+    d = await r.json();
+  } catch (e) {
+    toast('Network error.', 'error');
+    btn.disabled = false; btn.textContent = 'Generate Short'; return;
+  }
+  if (!r.ok) {
+    toast(d.error || 'Failed.', 'error');
+    btn.disabled = false; btn.textContent = 'Generate Short'; return;
+  }
+
+  // Reuse the existing progress panel — same /api/status/<id> contract.
+  currentJobId = d.job_id;
+  document.getElementById('result-card').classList.remove('open');
+  document.getElementById('progress-card').classList.add('active');
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(pollStatus, 2000);
+  stat.textContent = '';
+  btn.disabled = false; btn.textContent = 'Generate Short';
 }
 
 async function pollStatus() {

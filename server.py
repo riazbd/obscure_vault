@@ -755,6 +755,251 @@ def get_description(job_name):
         return jsonify({"description": desc_path.read_text()})
     return jsonify({"description": ""})
 
+
+# ════════════════════════════════════════════════════════
+#  Shorts pipeline (vertical 1080x1920, 30–55s, hook-only)
+# ════════════════════════════════════════════════════════
+
+def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
+                              cfg: dict):
+    import requests as req_lib
+    from PIL import Image
+    import edge_tts
+
+    job = jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[{job_id}] {msg}")
+
+    def progress(pct, stage):
+        job["progress"] = pct
+        job["stage"] = stage
+        log(f"[{pct}%] {stage}")
+
+    try:
+        slug = re.sub(r"[^\w\s-]", "", idea.lower())
+        slug = re.sub(r"[\s_-]+", "_", slug)[:40]
+        ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+        job_name = f"short_{ts}_{slug}"
+        workspace = WORKSPACE / job_name
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        W, H = 1080, 1920   # vertical
+
+        # ── Step 1: Generate the 100-130 word script ─────
+        progress(5, "Drafting Short script...")
+        from engines import script as script_engine
+        api_key = cfg.get("openrouter_api_key", "").strip()
+        if not api_key:
+            raise RuntimeError("OpenRouter key required for Shorts.")
+
+        sc = script_engine.generate_short_script(api_key, idea,
+                                                 target_words=target_words,
+                                                 on_log=log)
+        title  = sc["working_title"]
+        script_text = sc["script"]
+        if len(script_text) < 60:
+            raise RuntimeError("Short script came back too tiny — try a different topic.")
+        (workspace / "script.txt").write_text(script_text)
+
+        # ── Step 2: Voiceover ────────────────────────────
+        progress(15, "Generating voiceover...")
+        vo_path = workspace / "voiceover.mp3"
+        async def _tts():
+            comm = edge_tts.Communicate(script_text,
+                                        cfg.get("tts_voice", "en-US-GuyNeural"))
+            await comm.save(str(vo_path))
+        asyncio.run(_tts())
+
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(vo_path)],
+            capture_output=True, text=True,
+        )
+        duration = float(r.stdout.strip())
+        log(f"✅ {duration:.1f}s narration")
+        job["duration"] = f"0:{int(round(duration)):02d}"
+
+        # ── Step 3: Captions (always on for Shorts) ──────
+        captions_ass = None
+        try:
+            from engines import captions as cap_engine
+            if cap_engine.is_available():
+                progress(25, "Burning vertical captions...")
+                cap_result = cap_engine.build(
+                    vo_path, workspace,
+                    model_name=cfg.get("caption_model", "base.en"),
+                    style="shorts",
+                    on_log=log,
+                )
+                captions_ass = cap_result["ass"]
+                shutil.copyfile(cap_result["srt"], OUTPUT_DIR / f"{job_name}.srt")
+            else:
+                log("⚠️  faster-whisper not installed — skipping caption burn-in")
+        except Exception as e:
+            log(f"⚠️  caption build failed: {e}")
+
+        # ── Step 4: Smart B-roll (vertical) ──────────────
+        progress(35, "Fetching footage (vertical)...")
+        footage_track = None
+        if cfg.get("openrouter_api_key") and cfg.get("pexels_api_key"):
+            try:
+                from engines import footage as footage_engine
+                br = footage_engine.build(
+                    script=script_text, duration=duration, workspace=workspace,
+                    openrouter_key=cfg["openrouter_api_key"],
+                    pexels_key=cfg["pexels_api_key"],
+                    pixabay_key=cfg.get("pixabay_api_key", ""),
+                    width=W, height=H,
+                    target_chunk_secs=8.0,
+                    on_log=log,
+                )
+                footage_track = br["track"]
+            except Exception as e:
+                log(f"⚠️  smart b-roll failed: {e}")
+
+        if footage_track is None:
+            # Fallback to a dark vertical card
+            fallback = workspace / "processed" / "fallback.mp4"
+            fallback.parent.mkdir(exist_ok=True)
+            subprocess.run([
+                "ffmpeg", "-y", "-f", "lavfi",
+                "-i", f"color=c=0x0a0a0a:size={W}x{H}:rate=30:duration={duration}",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(fallback),
+            ], capture_output=True)
+            footage_track = fallback
+
+        # ── Step 5: Final assembly ───────────────────────
+        progress(70, "Rendering Short...")
+        final_mp4 = OUTPUT_DIR / f"{job_name}.mp4"
+        sub_chain = "subtitles=captions.ass," if captions_ass else ""
+
+        filter_parts = []
+        if sub_chain:
+            filter_parts.append(f"[0:v]{sub_chain[:-1]}[v]")
+            video_map = ["-map", "[v]"]
+        else:
+            video_map = ["-map", "0:v"]
+
+        cmd = ["ffmpeg", "-y", "-i", str(footage_track), "-i", str(vo_path)]
+        if filter_parts:
+            cmd += ["-filter_complex", ";".join(filter_parts)]
+        cmd += [
+            "-t", f"{duration:.3f}",
+            *video_map, "-map", "1:a",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart", "-pix_fmt", "yuv420p",
+            str(final_mp4),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                cwd=str(workspace))
+        if result.returncode != 0:
+            raise RuntimeError(f"FFmpeg failed:\n{result.stderr[-1500:]}")
+
+        # ── Step 6: Vertical thumbnail ───────────────────
+        progress(88, "Generating vertical thumbnail...")
+        thumb = OUTPUT_DIR / f"{job_name}_thumbnail.jpg"
+        try:
+            from engines import thumbnail as thumb_engine
+            thumb_engine.generate(api_key, title, thumb, vertical=True,
+                                  on_log=log)
+        except Exception as e:
+            log(f"⚠️  vertical thumbnail failed: {e}")
+
+        # ── Step 7: Metadata ─────────────────────────────
+        progress(95, "Saving metadata...")
+        description = (
+            f"{title}\n\n"
+            f"{script_text[:200]}...\n\n"
+            "🔔 Subscribe to Obscura Vault for buried history.\n\n"
+            "#Shorts #ObscuraVault #HiddenHistory #DarkHistory"
+        )
+        tags = ["shorts", "obscura vault", "hidden history",
+                "dark history", "untold history",
+                *[w.lower() for w in title.split() if len(w) > 3]]
+        meta = {"title": title, "description": description,
+                "tags": list(dict.fromkeys(tags)), "category": "27",
+                "duration_s": round(duration), "shorts": True}
+        (workspace / "metadata.json").write_text(json.dumps(meta, indent=2))
+        (workspace / "description.txt").write_text(description)
+
+        # ── Step 8: Auto-upload (if enabled) ─────────────
+        upload_result = None
+        if cfg.get("auto_upload"):
+            try:
+                from engines import upload as up
+                if up.is_installed() and up.has_token():
+                    progress(98, "Uploading Short...")
+                    srt_sib = OUTPUT_DIR / f"{job_name}.srt"
+                    upload_result = up.publish(
+                        final_mp4, title=title, description=description,
+                        tags=meta["tags"],
+                        thumbnail_path=(thumb if thumb.exists() else None),
+                        caption_srt_path=(srt_sib if srt_sib.exists() else None),
+                        privacy_status=cfg.get("default_privacy", "private"),
+                        contains_synthetic_media=cfg.get(
+                            "contains_synthetic_media", True),
+                        idea_id=cfg.get("_idea_id"),
+                        on_log=log,
+                    )
+            except Exception as e:
+                log(f"⚠️  auto-upload failed: {e}")
+
+        mb = final_mp4.stat().st_size / 1024 / 1024
+        job["result"] = {
+            "video":       final_mp4.name,
+            "thumbnail":   thumb.name,
+            "description": description,
+            "tags":        meta["tags"],
+            "duration":    f"0:{int(round(duration)):02d}",
+            "size_mb":     round(mb, 1),
+            "job_name":    job_name,
+            "youtube":     upload_result,
+            "shorts":      True,
+        }
+        progress(100, "Short ready! 🎬")
+        job["status"] = "done"
+
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc())
+
+
+@app.route("/api/run-short", methods=["POST"])
+def run_short():
+    data = request.json or {}
+    idea = (data.get("idea") or "").strip()
+    target_words = int(data.get("target_words") or 110)
+
+    if len(idea) < 8:
+        return jsonify({"error": "Idea too short (min 8 chars)."}), 400
+    if not (60 <= target_words <= 220):
+        return jsonify({"error": "target_words must be between 60 and 220"}), 400
+
+    cfg = load_config()
+    if not cfg.get("openrouter_api_key", "").strip():
+        return jsonify({"error": "OpenRouter key required."}), 400
+
+    for jid, j in jobs.items():
+        if j["status"] == "running":
+            return jsonify({"error": "A video is already being generated."}), 409
+
+    job_id = "sh_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    jobs[job_id] = {
+        "status": "running", "progress": 0, "stage": "Starting Short...",
+        "log": [], "result": None, "error": None, "duration": None,
+    }
+    threading.Thread(target=run_short_pipeline_thread,
+                     args=(job_id, idea, target_words, cfg),
+                     daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
 # ── Run pipeline ─────────────────────────────────────────
 @app.route("/api/run", methods=["POST"])
 def run_pipeline():

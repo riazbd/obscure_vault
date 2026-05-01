@@ -192,6 +192,55 @@ def generate_outline(api_key: str, idea: str, minutes: float = 10.0,
     return outline
 
 
+def generate_short_script(api_key: str, idea: str,
+                          target_words: int = 110,
+                          on_log=None) -> dict:
+    """
+    One-shot script for a 30–55 second YouTube Short.
+    Returns: {script, word_count, model, working_title}
+    """
+    log = on_log or (lambda m: None)
+    log(f"📜 Drafting Short ({target_words} words target)...")
+
+    msgs = [
+        {"role": "system", "content":
+            f"You are a senior YouTube Shorts writer for {CHANNEL_BRAND} "
+            "Output ONLY valid JSON."},
+        {"role": "user", "content": f"""
+Topic: {idea}
+
+Write a {target_words}-word YouTube Short narration. Hard rules:
+- Hook in the FIRST sentence (≤12 words). Make the viewer want to know more.
+- Pure prose narration (NOT a script with headers/cues).
+- Cinematic register: calm, ominous, authoritative.
+- Build to a single payoff revelation in the last sentence.
+- NO outro, NO subscribe pitch, NO "in this video".
+- ±10 % of {target_words} words.
+
+Also produce a 4-6 word working title.
+
+Return JSON:
+{{
+  "working_title": "string",
+  "script":        "the {target_words}-word narration"
+}}
+""".strip()}]
+
+    res = llm.call(api_key, msgs, json_mode=True, temperature=0.8,
+                   max_tokens=1200)
+    data = res["json"] or {}
+    script_text = (data.get("script") or "").strip()
+    title       = (data.get("working_title") or idea[:60]).strip()
+    wc = _word_count(script_text)
+    log(f"   ✅ {wc} words via {res['model']} — {title!r}")
+    return {
+        "script":         script_text,
+        "word_count":     wc,
+        "model":          res["model"],
+        "working_title":  title,
+    }
+
+
 def generate_script(api_key: str, idea: str, minutes: float = 10.0,
                     research_pack: dict | None = None,
                     on_log=None) -> dict:
