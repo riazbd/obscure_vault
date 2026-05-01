@@ -1083,9 +1083,9 @@ A 15-minute video needs ~2160 words."
           </div>
         </div>
 
-        <!-- Music Volume -->
+        <!-- Music Volume + audio polish -->
         <div class="card">
-          <div class="card-title">Music Volume</div>
+          <div class="card-title">Audio</div>
           <div class="form-group">
             <label class="form-label">Background Music Level</label>
             <div class="slider-wrap">
@@ -1093,7 +1093,23 @@ A 15-minute video needs ~2160 words."
                      oninput="document.getElementById('vol-val').textContent = Math.round(this.value*100)+'%'">
               <div class="slider-val" id="vol-val">12%</div>
             </div>
-            <div class="form-hint">Keep this low (8–15%) so the voiceover stays clear and front. 0% = no music.</div>
+            <div class="form-hint">Base level when audio polish is on, the actual music dips further when the narrator is speaking. 0% = no music.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+              <input type="checkbox" id="audio-polish" style="width:18px;height:18px;accent-color:var(--gold)">
+              <span>Audio polish — normalise voice + sidechain duck music</span>
+            </label>
+            <div class="form-hint">Voice normalised to broadcast-spec −16 LUFS / −1.5 dBTP. Music ducks under voice for podcast-grade clarity. Recommended.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Music duck depth (dB) — how much music drops when voice is loud</label>
+            <div class="slider-wrap">
+              <input type="range" id="ducking-db" min="3" max="18" step="1" value="8"
+                     oninput="document.getElementById('duck-val').textContent = this.value+' dB'">
+              <div class="slider-val" id="duck-val">8 dB</div>
+            </div>
+            <div class="form-hint">6–10 dB is the sweet spot for documentary voiceover.</div>
           </div>
         </div>
 
@@ -2437,6 +2453,9 @@ async function loadSettings() {
   document.getElementById('contains-synth').value  = (d.contains_synthetic_media === false) ? 'false' : 'true';
   document.getElementById('use-research').checked  = !!d.use_research;
   document.getElementById('motion-effect').value   = d.motion_effect || 'pan';
+  document.getElementById('audio-polish').checked  = d.audio_polish !== false;
+  document.getElementById('ducking-db').value      = d.ducking_db ?? 8;
+  document.getElementById('duck-val').textContent  = (d.ducking_db ?? 8) + ' dB';
   refreshYTStatus();
   refreshCaptionInstallStatus();
   loadScheduler();
@@ -2554,6 +2573,8 @@ async function saveSettings() {
     contains_synthetic_media: document.getElementById('contains-synth').value === 'true',
     use_research:       document.getElementById('use-research').checked,
     motion_effect:      document.getElementById('motion-effect').value,
+    audio_polish:       document.getElementById('audio-polish').checked,
+    ducking_db:         parseFloat(document.getElementById('ducking-db').value) || 8,
   };
   await fetch('/api/config', {
     method: 'POST', headers: {'Content-Type':'application/json'},

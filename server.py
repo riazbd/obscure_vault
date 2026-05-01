@@ -58,6 +58,8 @@ def load_config():
         "contains_synthetic_media": True,
         "use_research": False,
         "motion_effect": "pan",
+        "audio_polish": True,
+        "ducking_db": 8.0,
     }
 
 def save_config(data):
@@ -381,7 +383,12 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
         # ── Step 5: Final assembly ───────────────────────
         progress(70, "Assembling final video...")
         final_mp4 = OUTPUT_DIR / f"{job_name}.mp4"
-        music_vol = cfg.get("music_volume", 0.12)
+        music_vol     = cfg.get("music_volume", 0.12)
+        audio_polish  = cfg.get("audio_polish", True)
+        duck_db       = float(cfg.get("ducking_db", 8.0))      # dB the music
+                                                                # drops when voice is loud
+        # Sidechaincompress maps dB → ratio. ~8 dB of duck = ratio ~6-8.
+        duck_ratio    = max(2.0, min(20.0, duck_db / 1.0))
 
         # If captions exist, copy the .ass into the workspace so we can
         # reference it by relative name (cwd=workspace) and avoid the
@@ -390,7 +397,8 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
         if captions_ass:
             sub_chain = "subtitles=captions.ass,"
 
-        # Filter graph: video subtitle burn-in + (optional) music mix.
+        # Filter graph: video subtitle burn-in + voice loudnorm +
+        # (optional) sidechain-ducked music mix.
         filter_parts = []
         if sub_chain:
             filter_parts.append(f"[0:v]{sub_chain[:-1]}[v]")
@@ -399,15 +407,33 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
             video_map = ["-map", "0:v"]
 
         if music_path:
-            audio_in  = ["-i", str(vo_path), "-i", str(music_path)]
-            filter_parts.append(
-                f"[2:a]aloop=loop=-1:size=2e+09,volume={music_vol}[m];"
-                f"[1:a][m]amix=inputs=2:duration=first:dropout_transition=3[aout]"
-            )
+            audio_in = ["-i", str(vo_path), "-i", str(music_path)]
+            if audio_polish:
+                # Voice → -16 LUFS, music ducks under voice via sidechain.
+                # asplit so we can both feed the sidechain and keep the
+                # voice signal for the final amix.
+                filter_parts.append(
+                    f"[1:a]loudnorm=I=-16:TP=-1.5:LRA=11,asplit=2[voice][voice_sc];"
+                    f"[2:a]aloop=loop=-1:size=2e+09,volume={music_vol}[m_raw];"
+                    f"[m_raw][voice_sc]sidechaincompress="
+                    f"threshold=0.05:ratio={duck_ratio:.1f}:attack=20:release=400[m_ducked];"
+                    f"[voice][m_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]"
+                )
+            else:
+                filter_parts.append(
+                    f"[2:a]aloop=loop=-1:size=2e+09,volume={music_vol}[m];"
+                    f"[1:a][m]amix=inputs=2:duration=first:dropout_transition=3[aout]"
+                )
             audio_map = ["-map", "[aout]"]
         else:
-            audio_in  = ["-i", str(vo_path)]
-            audio_map = ["-map", "1:a"]
+            audio_in = ["-i", str(vo_path)]
+            if audio_polish:
+                filter_parts.append(
+                    "[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[aout]"
+                )
+                audio_map = ["-map", "[aout]"]
+            else:
+                audio_map = ["-map", "1:a"]
 
         cmd = ["ffmpeg", "-y", "-i", str(footage_track), *audio_in]
         if filter_parts:
@@ -877,6 +903,7 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
         progress(70, "Rendering Short...")
         final_mp4 = OUTPUT_DIR / f"{job_name}.mp4"
         sub_chain = "subtitles=captions.ass," if captions_ass else ""
+        audio_polish = cfg.get("audio_polish", True)
 
         filter_parts = []
         if sub_chain:
@@ -885,12 +912,19 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
         else:
             video_map = ["-map", "0:v"]
 
+        # Shorts: no music, but still loudnorm the voice when polish is on.
+        if audio_polish:
+            filter_parts.append("[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[aout]")
+            audio_map = ["-map", "[aout]"]
+        else:
+            audio_map = ["-map", "1:a"]
+
         cmd = ["ffmpeg", "-y", "-i", str(footage_track), "-i", str(vo_path)]
         if filter_parts:
             cmd += ["-filter_complex", ";".join(filter_parts)]
         cmd += [
             "-t", f"{duration:.3f}",
-            *video_map, "-map", "1:a",
+            *video_map, *audio_map,
             "-c:v", "libx264", "-preset", "medium", "-crf", "20",
             "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart", "-pix_fmt", "yuv420p",
