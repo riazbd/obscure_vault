@@ -721,6 +721,29 @@ input[type="range"]::-webkit-slider-thumb {
 
         <div class="row">
           <div>
+            <!-- AI script generator -->
+            <div class="card" style="border-color:var(--gold);border-width:1px;border-style:solid">
+              <div class="card-title" style="color:var(--gold)">⚡ Generate Script with AI (free)</div>
+              <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+                Drop in a topic — we'll produce a working title, full narration, and SEO description
+                using free OpenRouter models. Set your key in Settings first.
+              </p>
+              <div class="form-group">
+                <label class="form-label">Topic / Idea</label>
+                <input class="form-input" id="ai-idea" type="text"
+                  placeholder="e.g. The 1959 Dyatlov Pass incident and what Soviet investigators hid">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Target length (minutes)</label>
+                <input class="form-input" id="ai-minutes" type="number" min="3" max="20" step="1" value="10" style="max-width:160px">
+              </div>
+              <button class="btn btn-gold btn-full" id="ai-gen-btn" onclick="generateScriptWithAI()">
+                Generate Title + Script + SEO
+              </button>
+              <div id="ai-status" style="margin-top:12px;font-size:12px;color:var(--text-dim);min-height:18px"></div>
+              <pre id="ai-log" style="display:none;max-height:160px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:10px;font-size:11px;color:var(--text-dim);margin-top:8px;white-space:pre-wrap"></pre>
+            </div>
+
             <!-- Input -->
             <div class="card">
               <div class="card-title">Video Input</div>
@@ -748,10 +771,20 @@ A 15-minute video needs ~2160 words."
                 <div class="form-hint">The pipeline generates voiceover at ~144 words per minute using Edge TTS.</div>
               </div>
 
-              <button class="btn btn-primary btn-lg btn-full" id="gen-btn" onclick="startGeneration()">
-                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                Generate Video
-              </button>
+              <div style="display:flex;gap:10px;flex-wrap:wrap">
+                <button class="btn btn-primary btn-lg" id="gen-btn" style="flex:1;min-width:220px" onclick="startGeneration()">
+                  <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                  Generate Video
+                </button>
+                <button class="btn btn-ghost btn-lg" id="thumb-test-btn" onclick="testThumbnail()" title="Preview an AI thumbnail without rendering a full video">
+                  Test Thumbnail
+                </button>
+              </div>
+              <div id="thumb-test-result" style="margin-top:14px;display:none">
+                <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px" id="thumb-test-meta"></div>
+                <img id="thumb-test-img" style="width:100%;max-width:480px;border:1px solid #222;border-radius:6px;display:block">
+              </div>
+              <pre id="thumb-test-log" style="display:none;max-height:140px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:10px;font-size:11px;color:var(--text-dim);margin-top:8px;white-space:pre-wrap"></pre>
             </div>
 
             <!-- Result -->
@@ -891,6 +924,23 @@ A 15-minute video needs ~2160 words."
       </div>
       <div style="padding:32px 36px">
 
+        <!-- OpenRouter -->
+        <div class="card">
+          <div class="card-title">OpenRouter API Key (AI Script + SEO)</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+            Powers automatic script writing, title, description, and tag generation using
+            <strong style="color:var(--gold)">free</strong> models (DeepSeek V3, Llama 3.3 70B, Qwen 2.5 72B…). Get a free key at
+            <a href="https://openrouter.ai/keys" target="_blank" style="color:var(--gold)">openrouter.ai/keys</a>.
+          </p>
+          <div class="input-with-action">
+            <input class="form-input" id="openrouter-key" type="password" placeholder="sk-or-v1-...">
+            <button class="btn btn-gold" onclick="validateAndSaveOpenrouter()">
+              Validate &amp; Save
+            </button>
+          </div>
+          <div id="openrouter-status" style="margin-top:10px;font-size:12px;color:var(--text-dim)"></div>
+        </div>
+
         <!-- Pexels -->
         <div class="card">
           <div class="card-title">Pexels API Key</div>
@@ -937,6 +987,139 @@ A 15-minute video needs ~2160 words."
             </div>
             <div class="form-hint">Keep this low (8–15%) so the voiceover stays clear and front. 0% = no music.</div>
           </div>
+        </div>
+
+        <!-- YouTube Upload -->
+        <div class="card">
+          <div class="card-title">YouTube Upload</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">
+            Free via YouTube Data API v3. ~6 uploads per day per project.
+            One-time setup — see steps below if anything is missing.
+          </p>
+          <div id="yt-status-box" style="font-size:13px;line-height:1.7;margin-bottom:14px">
+            <div>Loading status...</div>
+          </div>
+
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+            <button class="btn btn-ghost btn-sm" id="yt-install-btn"   onclick="ytInstall()">1. Install libs</button>
+            <button class="btn btn-ghost btn-sm" id="yt-secrets-btn"   onclick="document.getElementById('yt-secrets-file').click()">2. Upload client_secrets.json</button>
+            <input  type="file" accept="application/json" id="yt-secrets-file" style="display:none" onchange="ytUploadSecrets(this.files[0])">
+            <button class="btn btn-ghost btn-sm" id="yt-auth-btn"      onclick="ytAuthorize()">3. Authorize</button>
+            <button class="btn btn-danger btn-sm" id="yt-revoke-btn"   onclick="ytRevoke()" style="display:none">Revoke token</button>
+          </div>
+
+          <details style="font-size:12px;color:var(--text-dim);margin-bottom:10px">
+            <summary style="cursor:pointer">How to get client_secrets.json (one-time setup)</summary>
+            <ol style="margin-top:8px;padding-left:18px;line-height:1.7">
+              <li>Visit <a href="https://console.cloud.google.com/" target="_blank" style="color:var(--gold)">console.cloud.google.com</a> → create or pick a project.</li>
+              <li>APIs &amp; Services → enable <strong>YouTube Data API v3</strong>.</li>
+              <li>OAuth consent screen → External; add yourself as a Test user.</li>
+              <li>Credentials → Create OAuth client ID → application type <strong>Desktop app</strong>.</li>
+              <li>Download the JSON, then click "2. Upload client_secrets.json" above.</li>
+              <li>Click "3. Authorize" — a browser tab will open; approve access.</li>
+            </ol>
+          </details>
+
+          <div class="form-group" style="margin-top:6px">
+            <label class="form-label" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+              <input type="checkbox" id="auto-upload" style="width:18px;height:18px;accent-color:var(--gold)">
+              <span>Auto-upload every generated video</span>
+            </label>
+          </div>
+          <div class="row">
+            <div class="form-group">
+              <label class="form-label">Default privacy</label>
+              <select class="form-select" id="default-privacy">
+                <option value="private">Private (default — you review first)</option>
+                <option value="unlisted">Unlisted</option>
+                <option value="public">Public</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Disclose AI / synthetic media</label>
+              <select class="form-select" id="contains-synth">
+                <option value="true" selected>Yes (recommended — required by policy)</option>
+                <option value="false">No</option>
+              </select>
+            </div>
+          </div>
+          <pre id="yt-log" style="display:none;max-height:160px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:10px;font-size:11px;color:var(--text-dim);margin-top:8px;white-space:pre-wrap"></pre>
+        </div>
+
+        <!-- Smart B-roll -->
+        <div class="card">
+          <div class="card-title">Smart B-roll (semantic per-chunk footage)</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+            Splits the script into ~10 s chunks, asks the LLM for cinematographic
+            search queries per chunk, and picks one matching clip per chunk from
+            Pexels (and Pixabay if configured). Falls back to the legacy
+            substring-keyword search if anything goes wrong.
+          </p>
+          <div class="form-group">
+            <label class="form-label" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+              <input type="checkbox" id="smart-broll" style="width:18px;height:18px;accent-color:var(--gold)">
+              <span>Use smart B-roll (requires OpenRouter + Pexels keys above)</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Target chunk length (seconds)</label>
+            <input class="form-input" id="chunk-seconds" type="number" min="6" max="20" step="1" value="10" style="max-width:140px">
+            <div class="form-hint">Shorter chunks = more cuts = more visual variety, but more downloads.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Pixabay API key (optional, for extra footage)</label>
+            <input class="form-input" id="pixabay-key" type="password" placeholder="optional — sign up at pixabay.com/api/docs/">
+            <div class="form-hint">Extra free source. Pexels alone usually works fine.</div>
+          </div>
+        </div>
+
+        <!-- AI Thumbnail -->
+        <div class="card">
+          <div class="card-title">AI Thumbnail</div>
+          <div class="form-group">
+            <label class="form-label" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+              <input type="checkbox" id="use-ai-thumb" style="width:18px;height:18px;accent-color:var(--gold)">
+              <span>Use AI-generated thumbnail (free, via Pollinations + OpenRouter)</span>
+            </label>
+            <div class="form-hint">Falls back to the legacy frame-based thumbnail if anything fails. Requires the OpenRouter key above.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Variants per video (for A/B testing)</label>
+            <input class="form-input" id="thumb-variants" type="number" min="1" max="3" value="1" style="max-width:120px">
+            <div class="form-hint">Extra variants saved alongside the primary as <code>*_v2.jpg</code>, <code>*_v3.jpg</code>.</div>
+          </div>
+        </div>
+
+        <!-- Captions -->
+        <div class="card">
+          <div class="card-title">Burn-in Captions</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+            Transcribes the voiceover with <strong>faster-whisper</strong> (local, CPU, free) and
+            burns styled subtitles into the final video. A separate <code>.srt</code> is also saved
+            for upload as a YouTube caption track. Adds ~3 minutes to render time.
+          </p>
+          <div class="form-group">
+            <label class="form-label" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+              <input type="checkbox" id="burn-captions" style="width:18px;height:18px;accent-color:var(--gold)">
+              <span>Generate &amp; burn-in captions on every video</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Whisper model</label>
+            <select class="form-select" id="caption-model" style="max-width:240px">
+              <option value="tiny.en">tiny.en — fastest, lowest quality (~75 MB)</option>
+              <option value="base.en" selected>base.en — recommended (~140 MB)</option>
+              <option value="small.en">small.en — better, slower (~460 MB)</option>
+            </select>
+            <div class="form-hint">Model downloads on first use. TTS audio is clean — base.en is plenty.</div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-ghost" id="cap-install-btn" onclick="installCaptions()">
+              Install caption deps
+            </button>
+            <span id="cap-install-status" style="font-size:12px;color:var(--text-dim)">Checking...</span>
+          </div>
+          <pre id="cap-install-log" style="display:none;max-height:160px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:10px;font-size:11px;color:var(--text-dim);margin-top:10px;white-space:pre-wrap"></pre>
         </div>
 
         <!-- Video Quality -->
@@ -1278,6 +1461,7 @@ async function loadOutputs() {
             ↓ Download
           </a>
           ${v.thumbnail ? `<a href="/api/outputs/thumbnail/${v.thumbnail}" class="btn btn-ghost btn-sm" download>🖼️</a>` : ''}
+          <button class="btn btn-gold btn-sm" onclick="ytUploadVideo('${v.name}')" title="Upload to YouTube">▶ YT</button>
           <button class="btn btn-danger btn-sm" onclick="deleteOutput('${v.name}')">🗑️</button>
         </div>
       </div>
@@ -1354,6 +1538,273 @@ dz.addEventListener('drop', e => {
 });
 
 /* ════════════════════════════════════════════════════════
+   AI SCRIPT GENERATION
+════════════════════════════════════════════════════════ */
+let aiScriptPoll = null;
+
+async function generateScriptWithAI() {
+  const idea    = document.getElementById('ai-idea').value.trim();
+  const minutes = parseFloat(document.getElementById('ai-minutes').value || '10');
+  if (idea.length < 8) { toast('Enter a topic first.', 'error'); return; }
+
+  const btn   = document.getElementById('ai-gen-btn');
+  const stat  = document.getElementById('ai-status');
+  const logEl = document.getElementById('ai-log');
+  btn.disabled    = true;
+  btn.textContent = 'Working...';
+  stat.textContent = 'Sending to OpenRouter...';
+  logEl.style.display = 'block';
+  logEl.textContent   = '';
+
+  let r, d;
+  try {
+    r = await fetch('/api/generate-script', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ idea, minutes }),
+    });
+    d = await r.json();
+  } catch (e) {
+    stat.textContent = ''; toast('Network error.', 'error');
+    btn.disabled = false; btn.textContent = 'Generate Title + Script + SEO';
+    return;
+  }
+  if (!r.ok) {
+    stat.textContent = '';
+    toast(d.error || 'Failed.', 'error');
+    btn.disabled = false; btn.textContent = 'Generate Title + Script + SEO';
+    return;
+  }
+
+  const jobId = d.job_id;
+  if (aiScriptPoll) clearInterval(aiScriptPoll);
+  aiScriptPoll = setInterval(async () => {
+    const sr = await fetch('/api/script-status/' + jobId);
+    const sd = await sr.json();
+    logEl.textContent = (sd.log || []).join('\n');
+    logEl.scrollTop   = logEl.scrollHeight;
+
+    if (sd.status === 'done') {
+      clearInterval(aiScriptPoll); aiScriptPoll = null;
+      const res = sd.result;
+      document.getElementById('vid-title').value  = res.title || '';
+      document.getElementById('vid-script').value = res.script || '';
+      window.aiResult = res;   // hold for description copy
+      updateWordCount();
+      stat.innerHTML  = '<span class="badge badge-ok">✓ Generated — review, then click Generate Video below.</span>'
+                      + '<div style="margin-top:8px;color:var(--text-dim)">Model: ' + (res.model||'?')
+                      + ' · Words: ' + (res.word_count||0)
+                      + (res.warning ? ' · <span style="color:#e6a23a">⚠ ' + res.warning + '</span>' : '')
+                      + '</div>';
+      btn.disabled = false; btn.textContent = 'Generate Title + Script + SEO';
+      toast('Script ready.', 'ok');
+    } else if (sd.status === 'error') {
+      clearInterval(aiScriptPoll); aiScriptPoll = null;
+      stat.innerHTML = '<span class="badge badge-error">✗ ' + (sd.error || 'Failed') + '</span>';
+      btn.disabled = false; btn.textContent = 'Generate Title + Script + SEO';
+      toast('Generation failed.', 'error');
+    } else {
+      stat.textContent = 'Working... (' + ((sd.log || []).slice(-1)[0] || '') + ')';
+    }
+  }, 1500);
+}
+
+/* ════════════════════════════════════════════════════════
+   YOUTUBE UPLOAD
+════════════════════════════════════════════════════════ */
+async function refreshYTStatus() {
+  const box = document.getElementById('yt-status-box');
+  if (!box) return;
+  let d = {};
+  try {
+    const r = await fetch('/api/youtube/status');
+    d = await r.json();
+  } catch (e) { box.innerHTML = '<span style="color:var(--text-dim)">Status unavailable.</span>'; return; }
+
+  const row = (label, ok) =>
+    `<div>${ok ? '<span class="badge badge-ok">✓</span>' : '<span class="badge badge-error">✗</span>'} ${label}</div>`;
+  let html = '';
+  html += row('YouTube libs installed', d.installed);
+  html += row('client_secrets.json uploaded', d.has_secrets);
+  html += row('Authorized', d.has_token);
+  if (d.channel) {
+    html += `<div style="margin-top:6px;color:var(--gold)">Channel: <strong>${d.channel.title}</strong> · ${d.channel.subscribers.toLocaleString()} subs</div>`;
+  }
+  box.innerHTML = html;
+  document.getElementById('yt-revoke-btn').style.display = d.has_token ? 'inline-flex' : 'none';
+}
+
+async function ytInstall() {
+  const btn = document.getElementById('yt-install-btn');
+  const log = document.getElementById('yt-log');
+  btn.disabled = true; btn.textContent = 'Installing...';
+  log.style.display = 'block'; log.textContent = '';
+  const r = await fetch('/api/youtube/install', { method: 'POST' });
+  const d = await r.json();
+  const poll = setInterval(async () => {
+    const sr = await fetch('/api/youtube/install-status/' + d.job_id);
+    const sd = await sr.json();
+    log.textContent = (sd.log || []).join('\n');
+    log.scrollTop = log.scrollHeight;
+    if (sd.status === 'done') {
+      clearInterval(poll);
+      btn.disabled = false; btn.textContent = '1. Install libs';
+      toast('YouTube libs installed.', 'ok');
+      refreshYTStatus();
+    } else if (sd.status === 'error') {
+      clearInterval(poll);
+      btn.disabled = false; btn.textContent = '1. Install libs';
+      toast('Install failed.', 'error');
+    }
+  }, 1200);
+}
+
+async function ytUploadSecrets(file) {
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  const r = await fetch('/api/youtube/upload-secrets', { method: 'POST', body: fd });
+  const d = await r.json();
+  if (r.ok) {
+    toast('client_secrets.json saved. Now click Authorize.', 'ok');
+    refreshYTStatus();
+  } else {
+    toast(d.error || 'Upload failed.', 'error');
+  }
+}
+
+async function ytAuthorize() {
+  const btn = document.getElementById('yt-auth-btn');
+  const log = document.getElementById('yt-log');
+  btn.disabled = true; btn.textContent = 'Waiting for browser...';
+  log.style.display = 'block';
+  log.textContent = 'A browser tab is opening. Approve access there.\n';
+
+  const r = await fetch('/api/youtube/authorize', { method: 'POST' });
+  const d = await r.json();
+  if (!r.ok) {
+    btn.disabled = false; btn.textContent = '3. Authorize';
+    toast(d.error || 'Authorize failed.', 'error'); return;
+  }
+  const poll = setInterval(async () => {
+    const sr = await fetch('/api/youtube/auth-status/' + d.job_id);
+    const sd = await sr.json();
+    if (sd.log && sd.log.length) {
+      log.textContent = sd.log.join('\n'); log.scrollTop = log.scrollHeight;
+    }
+    if (sd.status === 'done') {
+      clearInterval(poll);
+      btn.disabled = false; btn.textContent = '3. Authorize';
+      toast('Authorized! 🎉', 'ok');
+      refreshYTStatus();
+    } else if (sd.status === 'error') {
+      clearInterval(poll);
+      btn.disabled = false; btn.textContent = '3. Authorize';
+      toast('Auth failed: ' + (sd.error || ''), 'error');
+    }
+  }, 1500);
+}
+
+async function ytRevoke() {
+  if (!confirm('Revoke the saved YouTube token? You will need to re-authorize.')) return;
+  await fetch('/api/youtube/revoke', { method: 'POST' });
+  toast('Token revoked.', 'info');
+  refreshYTStatus();
+}
+
+async function ytUploadVideo(filename) {
+  if (!confirm('Upload "' + filename + '" to YouTube as ' +
+               document.getElementById('default-privacy')?.value || 'private' + '?')) return;
+  const opts = {
+    video: filename,
+    privacy_status: document.getElementById('default-privacy')?.value || 'private',
+    contains_synthetic_media: (document.getElementById('contains-synth')?.value || 'true') === 'true',
+  };
+  const r = await fetch('/api/youtube/upload-video', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(opts),
+  });
+  const d = await r.json();
+  if (!r.ok) { toast(d.error || 'Failed to start.', 'error'); return; }
+
+  toast('Uploading to YouTube...', 'info');
+  const poll = setInterval(async () => {
+    const sr = await fetch('/api/youtube/upload-status/' + d.job_id);
+    const sd = await sr.json();
+    if (sd.status === 'done') {
+      clearInterval(poll);
+      toast('Uploaded! ' + sd.result.url, 'ok');
+      window.open(sd.result.studio, '_blank');
+    } else if (sd.status === 'error') {
+      clearInterval(poll);
+      toast('Upload failed: ' + (sd.error || ''), 'error');
+    }
+  }, 2000);
+}
+
+/* ════════════════════════════════════════════════════════
+   THUMBNAIL PREVIEW
+════════════════════════════════════════════════════════ */
+let thumbPoll = null;
+
+async function testThumbnail() {
+  const title = document.getElementById('vid-title').value.trim();
+  if (title.length < 4) { toast('Enter a video title first.', 'error'); return; }
+
+  const btn    = document.getElementById('thumb-test-btn');
+  const resBox = document.getElementById('thumb-test-result');
+  const logEl  = document.getElementById('thumb-test-log');
+
+  btn.disabled    = true;
+  btn.textContent = 'Working...';
+  resBox.style.display = 'none';
+  logEl.style.display  = 'block';
+  logEl.textContent    = '';
+
+  let r, d;
+  try {
+    r = await fetch('/api/test-thumbnail', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ title, variants: 1 })
+    });
+    d = await r.json();
+  } catch (e) {
+    toast('Network error.', 'error');
+    btn.disabled = false; btn.textContent = 'Test Thumbnail';
+    return;
+  }
+  if (!r.ok) {
+    toast(d.error || 'Failed.', 'error');
+    btn.disabled = false; btn.textContent = 'Test Thumbnail';
+    return;
+  }
+
+  const jobId = d.job_id;
+  if (thumbPoll) clearInterval(thumbPoll);
+  thumbPoll = setInterval(async () => {
+    const sr = await fetch('/api/thumb-status/' + jobId);
+    const sd = await sr.json();
+    logEl.textContent = (sd.log || []).join('\n');
+    logEl.scrollTop   = logEl.scrollHeight;
+
+    if (sd.status === 'done') {
+      clearInterval(thumbPoll); thumbPoll = null;
+      const res  = sd.result;
+      const img  = document.getElementById('thumb-test-img');
+      const meta = document.getElementById('thumb-test-meta');
+      img.src = '/api/outputs/thumbnail/' + encodeURIComponent(res.primary) + '?t=' + Date.now();
+      meta.textContent = 'Punchline: "' + (res.punchline||'') + '" · saved as ' + res.primary;
+      resBox.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Test Thumbnail';
+      toast('Thumbnail preview ready.', 'ok');
+    } else if (sd.status === 'error') {
+      clearInterval(thumbPoll); thumbPoll = null;
+      toast('Thumbnail failed: ' + (sd.error || 'unknown'), 'error');
+      btn.disabled = false; btn.textContent = 'Test Thumbnail';
+    }
+  }, 1500);
+}
+
+/* ════════════════════════════════════════════════════════
    SETTINGS
 ════════════════════════════════════════════════════════ */
 async function loadSettings() {
@@ -1362,6 +1813,7 @@ async function loadSettings() {
 
   const key = d.pexels_api_key || '';
   document.getElementById('pexels-key').value   = key;
+  document.getElementById('openrouter-key').value = d.openrouter_api_key || '';
   document.getElementById('tts-voice').value    = d.tts_voice || 'en-US-GuyNeural';
   document.getElementById('music-vol').value    = d.music_volume || 0.12;
   document.getElementById('vol-val').textContent= Math.round((d.music_volume||0.12)*100)+'%';
@@ -1373,6 +1825,93 @@ async function loadSettings() {
   if (key) {
     document.getElementById('pexels-status').innerHTML =
       '<span class="badge badge-ok">✓ Key saved</span>';
+  }
+  if (d.openrouter_api_key) {
+    document.getElementById('openrouter-status').innerHTML =
+      '<span class="badge badge-ok">✓ Key saved</span>';
+  }
+  document.getElementById('use-ai-thumb').checked = d.use_ai_thumbnail !== false;
+  document.getElementById('thumb-variants').value = d.thumbnail_variants || 1;
+  document.getElementById('burn-captions').checked = !!d.burn_captions;
+  document.getElementById('caption-model').value   = d.caption_model || 'base.en';
+  document.getElementById('smart-broll').checked   = d.smart_broll !== false;
+  document.getElementById('chunk-seconds').value   = d.chunk_seconds || 10;
+  document.getElementById('pixabay-key').value     = d.pixabay_api_key || '';
+  document.getElementById('auto-upload').checked   = !!d.auto_upload;
+  document.getElementById('default-privacy').value = d.default_privacy || 'private';
+  document.getElementById('contains-synth').value  = (d.contains_synthetic_media === false) ? 'false' : 'true';
+  refreshYTStatus();
+  refreshCaptionInstallStatus();
+}
+
+async function refreshCaptionInstallStatus() {
+  const el = document.getElementById('cap-install-status');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/captions/status');
+    const d = await r.json();
+    if (d.available) {
+      el.innerHTML = '<span class="badge badge-ok">✓ Installed</span>';
+      document.getElementById('cap-install-btn').textContent = 'Reinstall';
+    } else {
+      el.innerHTML = '<span class="badge badge-error">Not installed</span>';
+    }
+  } catch (e) {
+    el.textContent = '';
+  }
+}
+
+async function installCaptions() {
+  const btn  = document.getElementById('cap-install-btn');
+  const stat = document.getElementById('cap-install-status');
+  const log  = document.getElementById('cap-install-log');
+  btn.disabled = true; btn.textContent = 'Installing...';
+  stat.textContent = 'pip install faster-whisper running...';
+  log.style.display = 'block';
+  log.textContent = '';
+
+  const r = await fetch('/api/captions/install', { method: 'POST' });
+  const d = await r.json();
+  const jobId = d.job_id;
+
+  const poll = setInterval(async () => {
+    const sr = await fetch('/api/captions/install-status/' + jobId);
+    const sd = await sr.json();
+    log.textContent = (sd.log || []).join('\n');
+    log.scrollTop   = log.scrollHeight;
+    if (sd.status === 'done') {
+      clearInterval(poll);
+      btn.disabled = false; btn.textContent = 'Reinstall';
+      stat.innerHTML = '<span class="badge badge-ok">✓ Installed</span>';
+      toast('faster-whisper installed.', 'ok');
+      refreshCaptionInstallStatus();
+    } else if (sd.status === 'error') {
+      clearInterval(poll);
+      btn.disabled = false; btn.textContent = 'Install caption deps';
+      stat.innerHTML = '<span class="badge badge-error">✗ ' + (sd.error || 'failed') + '</span>';
+      toast('Install failed — see log.', 'error');
+    }
+  }, 1200);
+}
+
+async function validateAndSaveOpenrouter() {
+  const key = document.getElementById('openrouter-key').value.trim();
+  if (!key) { toast('Enter a key first.', 'error'); return; }
+
+  const status = document.getElementById('openrouter-status');
+  status.innerHTML = '<span style="color:var(--text-dim);font-size:12px">Validating against free model...</span>';
+  const r = await fetch('/api/openrouter/validate', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ key })
+  });
+  const d = await r.json();
+  if (d.valid) {
+    status.innerHTML = '<span class="badge badge-ok">✓ Valid key — saved!</span>';
+    await saveSettings();
+    toast('OpenRouter key validated and saved!', 'ok');
+  } else {
+    status.innerHTML = '<span class="badge badge-error">✗ Invalid key or no free models available</span>';
+    toast('OpenRouter validation failed.', 'error');
   }
 }
 
@@ -1399,11 +1938,22 @@ async function validateAndSavePexels() {
 async function saveSettings() {
   const res   = document.getElementById('vid-res').value.split('x').map(Number);
   const cfg = {
-    pexels_api_key:   document.getElementById('pexels-key').value.trim(),
-    tts_voice:        document.getElementById('tts-voice').value,
-    music_volume:     parseFloat(document.getElementById('music-vol').value),
-    video_resolution: res,
-    max_clips:        parseInt(document.getElementById('max-clips').value),
+    pexels_api_key:     document.getElementById('pexels-key').value.trim(),
+    openrouter_api_key: document.getElementById('openrouter-key').value.trim(),
+    tts_voice:          document.getElementById('tts-voice').value,
+    music_volume:       parseFloat(document.getElementById('music-vol').value),
+    video_resolution:   res,
+    max_clips:          parseInt(document.getElementById('max-clips').value),
+    use_ai_thumbnail:   document.getElementById('use-ai-thumb').checked,
+    thumbnail_variants: parseInt(document.getElementById('thumb-variants').value) || 1,
+    burn_captions:      document.getElementById('burn-captions').checked,
+    caption_model:      document.getElementById('caption-model').value,
+    smart_broll:        document.getElementById('smart-broll').checked,
+    chunk_seconds:      parseInt(document.getElementById('chunk-seconds').value) || 10,
+    pixabay_api_key:    document.getElementById('pixabay-key').value.trim(),
+    auto_upload:        document.getElementById('auto-upload').checked,
+    default_privacy:    document.getElementById('default-privacy').value,
+    contains_synthetic_media: document.getElementById('contains-synth').value === 'true',
   };
   await fetch('/api/config', {
     method: 'POST', headers: {'Content-Type':'application/json'},

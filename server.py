@@ -41,10 +41,21 @@ def load_config():
         return json.loads(CONFIG_PATH.read_text())
     return {
         "pexels_api_key": "",
+        "openrouter_api_key": "",
         "tts_voice": "en-US-GuyNeural",
         "music_volume": 0.12,
         "video_resolution": [1920, 1080],
-        "max_clips": 25
+        "max_clips": 25,
+        "use_ai_thumbnail": True,
+        "thumbnail_variants": 1,
+        "burn_captions": False,
+        "caption_model": "base.en",
+        "smart_broll": True,
+        "pixabay_api_key": "",
+        "chunk_seconds": 10,
+        "auto_upload": False,
+        "default_privacy": "private",
+        "contains_synthetic_media": True,
     }
 
 def save_config(data):
@@ -143,97 +154,219 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
         log(f"✅ Duration: {m}m {s}s")
         job["duration"] = f"{m}:{s:02d}"
 
-        # ── Step 2: Footage ──────────────────────────────
-        progress(18, "Searching Pexels for footage...")
-        footage_dir = workspace / "footage"
-        footage_dir.mkdir(exist_ok=True)
-        footage_paths = []
+        # ── Step 1b: Captions (optional, before footage so it can run concurrently
+        #            on a faster box; here it's serial to spare RAM) ──
+        captions_ass = None
+        if cfg.get("burn_captions"):
+            try:
+                from engines import captions as cap_engine
+                if not cap_engine.is_available():
+                    log("⚠️  burn_captions enabled but faster-whisper not installed; skipping")
+                else:
+                    progress(14, "Generating captions...")
+                    cap_result = cap_engine.build(
+                        vo_path, workspace,
+                        model_name=cfg.get("caption_model", "base.en"),
+                        on_log=log,
+                    )
+                    captions_ass = cap_result["ass"]
+                    # Copy .srt into output dir for YouTube upload
+                    srt_dest = OUTPUT_DIR / f"{job_name}.srt"
+                    try:
+                        shutil.copyfile(cap_result["srt"], srt_dest)
+                    except Exception:
+                        pass
+            except Exception as e:
+                log(f"⚠️  caption build failed, continuing without burn-in: {e}")
+                captions_ass = None
 
-        pexels_key = cfg.get("pexels_api_key", "")
-        if pexels_key and len(pexels_key) > 10:
-            KEYWORD_MAP = {
-                "war": ["war ruins smoke", "battlefield aerial", "military ruins"],
-                "secret": ["dark corridor", "vault door steel", "shadow mystery"],
-                "death": ["graveyard fog", "dark cemetery night", "abandoned place"],
-                "disappear": ["fog forest", "dark lake mist", "abandoned building"],
-                "prison": ["dark prison", "stone dungeon", "iron bars gate"],
-                "ancient": ["ancient ruins", "stone temple", "archaeology excavation"],
-                "soviet": ["soviet era building", "cold war bunker", "brutalist architecture"],
-                "plague": ["medieval architecture", "dramatic storm clouds", "empty town"],
-                "nasa": ["space dark", "night sky stars", "rocket launch"],
-                "cia": ["government building", "dark hallway", "city at night"],
-                "nuclear": ["explosion cloud", "power plant", "dramatic storm"],
-                "experiment": ["dark laboratory", "science equipment", "microscope"],
-                "cult": ["dark forest night", "abandoned church", "candlelight"],
-                "ship": ["stormy ocean", "shipwreck", "dark stormy sea"],
-                "mountain": ["mountain fog", "blizzard snow", "dark alpine peak"],
-                "default": ["dramatic dark clouds", "abandoned historical building",
-                            "foggy landscape", "dark ruins"],
-            }
-            ATMOSPHERIC = [
-                "candle flame dark background", "old parchment texture",
-                "dramatic light rays", "dark water reflection",
-                "ancient stone texture", "dramatic thunderstorm",
-                "foggy forest path", "dark corridor light end",
-            ]
-            title_lower = title.lower()
-            keywords = []
-            for trigger, queries in KEYWORD_MAP.items():
-                if trigger in title_lower:
-                    keywords.extend(random.sample(queries, min(2, len(queries))))
-            if not keywords:
-                keywords = list(KEYWORD_MAP["default"])
-            keywords += random.sample(ATMOSPHERIC, 3)
+        # ── Step 2-4: Footage ────────────────────────────
+        footage_track    = None
+        footage_paths    = []
+        used_smart_broll = False
+        W, H = cfg.get("video_resolution", [1920, 1080])
 
-            all_meta = []
-            for kw in keywords:
-                if len(all_meta) >= cfg.get("max_clips", 25):
-                    break
-                try:
-                    headers = {"Authorization": pexels_key}
-                    params  = {"query": kw, "per_page": 3,
-                               "orientation": "landscape", "size": "medium"}
-                    resp = req_lib.get("https://api.pexels.com/videos/search",
-                                       headers=headers, params=params, timeout=15)
-                    resp.raise_for_status()
-                    for v in resp.json().get("videos", []):
-                        files = sorted(
-                            [f for f in v.get("video_files", []) if f.get("width", 0) <= 1920],
-                            key=lambda x: x.get("width", 0), reverse=True
-                        )
-                        if files:
-                            all_meta.append({"id": v["id"], "url": files[0]["link"],
-                                             "duration": v.get("duration", 8), "q": kw})
-                except Exception as e:
-                    log(f"⚠️ Pexels '{kw}': {e}")
+        if (cfg.get("smart_broll", True)
+            and cfg.get("openrouter_api_key", "")
+            and cfg.get("pexels_api_key", "")):
+            progress(18, "Smart B-roll: chunking script + querying LLM...")
+            try:
+                from engines import footage as footage_engine
+                br = footage_engine.build(
+                    script=script, duration=duration, workspace=workspace,
+                    openrouter_key=cfg["openrouter_api_key"],
+                    pexels_key=cfg["pexels_api_key"],
+                    pixabay_key=cfg.get("pixabay_api_key", ""),
+                    width=W, height=H,
+                    target_chunk_secs=float(cfg.get("chunk_seconds", 10.0)),
+                    on_log=log,
+                )
+                footage_track    = br["track"]
+                footage_paths    = sorted((workspace / "footage").glob("*.mp4"))
+                used_smart_broll = True
+                progress(65, f"Smart B-roll ready ({len(br['plan'])} chunks)")
+            except Exception as e:
+                log(f"⚠️  Smart B-roll failed, falling back to legacy: {e}")
+                footage_track = None
 
-            random.shuffle(all_meta)
-            total_secs, need = 0.0, duration * 1.5
-            downloaded = 0
-            for meta in all_meta:
-                if total_secs >= need:
-                    break
-                dest = footage_dir / f"clip_{meta['id']}.mp4"
-                try:
-                    r2 = req_lib.get(meta["url"], stream=True, timeout=60)
-                    r2.raise_for_status()
-                    with open(dest, "wb") as f:
-                        for chunk in r2.iter_content(1024 * 256):
-                            f.write(chunk)
-                    footage_paths.append(dest)
-                    total_secs += meta["duration"]
-                    downloaded += 1
-                    pct = 18 + int((downloaded / max(len(all_meta), 1)) * 22)
-                    progress(min(pct, 40), f"Downloaded clip {downloaded}: {meta['q']}")
-                except Exception as e:
-                    log(f"⚠️ Clip download fail: {e}")
+        if not used_smart_broll:
+            # ── Legacy: substring keywords → bulk Pexels → uniform process ──
+            progress(18, "Searching Pexels for footage...")
+            footage_dir = workspace / "footage"
+            footage_dir.mkdir(exist_ok=True)
+            footage_paths = []
 
-            log(f"✅ {len(footage_paths)} clips, ~{total_secs:.0f}s footage")
-        else:
-            log("⚠️ No Pexels key — using dark background")
+            pexels_key = cfg.get("pexels_api_key", "")
+            if pexels_key and len(pexels_key) > 10:
+                KEYWORD_MAP = {
+                    "war": ["war ruins smoke", "battlefield aerial", "military ruins"],
+                    "secret": ["dark corridor", "vault door steel", "shadow mystery"],
+                    "death": ["graveyard fog", "dark cemetery night", "abandoned place"],
+                    "disappear": ["fog forest", "dark lake mist", "abandoned building"],
+                    "prison": ["dark prison", "stone dungeon", "iron bars gate"],
+                    "ancient": ["ancient ruins", "stone temple", "archaeology excavation"],
+                    "soviet": ["soviet era building", "cold war bunker", "brutalist architecture"],
+                    "plague": ["medieval architecture", "dramatic storm clouds", "empty town"],
+                    "nasa": ["space dark", "night sky stars", "rocket launch"],
+                    "cia": ["government building", "dark hallway", "city at night"],
+                    "nuclear": ["explosion cloud", "power plant", "dramatic storm"],
+                    "experiment": ["dark laboratory", "science equipment", "microscope"],
+                    "cult": ["dark forest night", "abandoned church", "candlelight"],
+                    "ship": ["stormy ocean", "shipwreck", "dark stormy sea"],
+                    "mountain": ["mountain fog", "blizzard snow", "dark alpine peak"],
+                    "default": ["dramatic dark clouds", "abandoned historical building",
+                                "foggy landscape", "dark ruins"],
+                }
+                ATMOSPHERIC = [
+                    "candle flame dark background", "old parchment texture",
+                    "dramatic light rays", "dark water reflection",
+                    "ancient stone texture", "dramatic thunderstorm",
+                    "foggy forest path", "dark corridor light end",
+                ]
+                title_lower = title.lower()
+                keywords = []
+                for trigger, queries in KEYWORD_MAP.items():
+                    if trigger in title_lower:
+                        keywords.extend(random.sample(queries, min(2, len(queries))))
+                if not keywords:
+                    keywords = list(KEYWORD_MAP["default"])
+                keywords += random.sample(ATMOSPHERIC, 3)
 
-        # ── Step 3: Music ────────────────────────────────
-        progress(42, "Selecting background music...")
+                all_meta = []
+                for kw in keywords:
+                    if len(all_meta) >= cfg.get("max_clips", 25):
+                        break
+                    try:
+                        headers = {"Authorization": pexels_key}
+                        params  = {"query": kw, "per_page": 3,
+                                   "orientation": "landscape", "size": "medium"}
+                        resp = req_lib.get("https://api.pexels.com/videos/search",
+                                           headers=headers, params=params, timeout=15)
+                        resp.raise_for_status()
+                        for v in resp.json().get("videos", []):
+                            files = sorted(
+                                [f for f in v.get("video_files", []) if f.get("width", 0) <= 1920],
+                                key=lambda x: x.get("width", 0), reverse=True
+                            )
+                            if files:
+                                all_meta.append({"id": v["id"], "url": files[0]["link"],
+                                                 "duration": v.get("duration", 8), "q": kw})
+                    except Exception as e:
+                        log(f"⚠️ Pexels '{kw}': {e}")
+
+                random.shuffle(all_meta)
+                total_secs, need = 0.0, duration * 1.5
+                downloaded = 0
+                for meta in all_meta:
+                    if total_secs >= need:
+                        break
+                    dest = footage_dir / f"clip_{meta['id']}.mp4"
+                    try:
+                        r2 = req_lib.get(meta["url"], stream=True, timeout=60)
+                        r2.raise_for_status()
+                        with open(dest, "wb") as f:
+                            for chunk in r2.iter_content(1024 * 256):
+                                f.write(chunk)
+                        footage_paths.append(dest)
+                        total_secs += meta["duration"]
+                        downloaded += 1
+                        pct = 18 + int((downloaded / max(len(all_meta), 1)) * 22)
+                        progress(min(pct, 40), f"Downloaded clip {downloaded}: {meta['q']}")
+                    except Exception as e:
+                        log(f"⚠️ Clip download fail: {e}")
+
+                log(f"✅ {len(footage_paths)} clips, ~{total_secs:.0f}s footage")
+            else:
+                log("⚠️ No Pexels key — using dark background")
+
+            # ── Step 4 (legacy): Process footage ─────────
+            progress(45, "Processing and colour-grading footage clips...")
+            proc_dir = workspace / "processed"
+            proc_dir.mkdir(exist_ok=True)
+
+            COLOR_GRADE = (
+                "colorchannelmixer=rr=1.05:gg=0.95:bb=0.88,"
+                "curves=all='0/0 0.25/0.18 0.75/0.65 1/0.90',"
+                "eq=saturation=0.78:brightness=-0.04:contrast=1.10"
+            )
+
+            scaled = []
+            for i, cp in enumerate(footage_paths):
+                out = proc_dir / f"s{i:03d}.mp4"
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", str(cp),
+                    "-vf", (f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+                            f"crop={W}:{H},setsar=1,{COLOR_GRADE}"),
+                    "-an", "-c:v", "libx264", "-preset", "fast",
+                    "-crf", "23", "-r", "30", "-pix_fmt", "yuv420p", str(out)
+                ], capture_output=True)
+                if out.exists():
+                    scaled.append(out)
+                pct = 45 + int((i + 1) / max(len(footage_paths), 1) * 20)
+                progress(min(pct, 65), f"Processed clip {i+1}/{len(footage_paths)}")
+
+            if not scaled:
+                progress(65, "Generating dark background card...")
+                fallback = proc_dir / "fallback.mp4"
+                subprocess.run([
+                    "ffmpeg", "-y", "-f", "lavfi",
+                    "-i", f"color=c=0x0a0a0a:size={W}x{H}:rate=30:duration={duration}",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(fallback)
+                ], capture_output=True)
+                footage_track = fallback
+            else:
+                concat_txt = workspace / "concat.txt"
+                lines, current, idx = [], 0.0, 0
+                while current < duration + 5:
+                    p = scaled[idx % len(scaled)]
+                    lines.append(f"file '{p.resolve()}'")
+                    try:
+                        rd = subprocess.run(
+                            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                             "-of", "default=noprint_wrappers=1:nokey=1", str(p)],
+                            capture_output=True, text=True)
+                        current += float(rd.stdout.strip())
+                    except Exception:
+                        current += 8.0
+                    idx += 1
+                concat_txt.write_text("\n".join(lines))
+
+                progress(66, "Concatenating footage...")
+                raw = proc_dir / "concat_raw.mp4"
+                subprocess.run([
+                    "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                    "-i", str(concat_txt), "-c", "copy", str(raw)
+                ], capture_output=True)
+
+                trimmed = proc_dir / "footage_trimmed.mp4"
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", str(raw),
+                    "-t", str(duration), "-c", "copy", str(trimmed)
+                ], capture_output=True)
+                footage_track = trimmed
+
+        # ── Step 3: Music (independent of B-roll branch) ──
+        progress(67, "Selecting background music...")
         music_path = None
         tracks = list(MUSIC_DIR.glob("*.mp3")) + list(MUSIC_DIR.glob("*.wav"))
         if tracks:
@@ -242,101 +375,50 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
         else:
             log("ℹ️ No music files — voiceover only")
 
-        # ── Step 4: Process footage ──────────────────────
-        progress(45, "Processing and colour-grading footage clips...")
-        proc_dir = workspace / "processed"
-        proc_dir.mkdir(exist_ok=True)
-        W, H = cfg.get("video_resolution", [1920, 1080])
-
-        COLOR_GRADE = (
-            "colorchannelmixer=rr=1.05:gg=0.95:bb=0.88,"
-            "curves=all='0/0 0.25/0.18 0.75/0.65 1/0.90',"
-            "eq=saturation=0.78:brightness=-0.04:contrast=1.10"
-        )
-
-        scaled = []
-        for i, cp in enumerate(footage_paths):
-            out = proc_dir / f"s{i:03d}.mp4"
-            subprocess.run([
-                "ffmpeg", "-y", "-i", str(cp),
-                "-vf", (f"scale={W}:{H}:force_original_aspect_ratio=increase,"
-                        f"crop={W}:{H},setsar=1,{COLOR_GRADE}"),
-                "-an", "-c:v", "libx264", "-preset", "fast",
-                "-crf", "23", "-r", "30", "-pix_fmt", "yuv420p", str(out)
-            ], capture_output=True)
-            if out.exists():
-                scaled.append(out)
-            pct = 45 + int((i + 1) / max(len(footage_paths), 1) * 20)
-            progress(min(pct, 65), f"Processed clip {i+1}/{len(footage_paths)}")
-
-        # Build footage track
-        if not scaled:
-            progress(65, "Generating dark background card...")
-            fallback = proc_dir / "fallback.mp4"
-            subprocess.run([
-                "ffmpeg", "-y", "-f", "lavfi",
-                "-i", f"color=c=0x0a0a0a:size={W}x{H}:rate=30:duration={duration}",
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(fallback)
-            ], capture_output=True)
-            footage_track = fallback
-        else:
-            # Concat list
-            concat_txt = workspace / "concat.txt"
-            lines, current, idx = [], 0.0, 0
-            while current < duration + 5:
-                p = scaled[idx % len(scaled)]
-                lines.append(f"file '{p.resolve()}'")
-                try:
-                    rd = subprocess.run(
-                        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                         "-of", "default=noprint_wrappers=1:nokey=1", str(p)],
-                        capture_output=True, text=True)
-                    current += float(rd.stdout.strip())
-                except Exception:
-                    current += 8.0
-                idx += 1
-            concat_txt.write_text("\n".join(lines))
-
-            progress(66, "Concatenating footage...")
-            raw = proc_dir / "concat_raw.mp4"
-            subprocess.run([
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                "-i", str(concat_txt), "-c", "copy", str(raw)
-            ], capture_output=True)
-
-            trimmed = proc_dir / "footage_trimmed.mp4"
-            subprocess.run([
-                "ffmpeg", "-y", "-i", str(raw),
-                "-t", str(duration), "-c", "copy", str(trimmed)
-            ], capture_output=True)
-            footage_track = trimmed
-
         # ── Step 5: Final assembly ───────────────────────
         progress(70, "Assembling final video...")
         final_mp4 = OUTPUT_DIR / f"{job_name}.mp4"
         music_vol = cfg.get("music_volume", 0.12)
 
+        # If captions exist, copy the .ass into the workspace so we can
+        # reference it by relative name (cwd=workspace) and avoid the
+        # cross-platform horror of escaping a subtitle filter path.
+        sub_chain = ""
+        if captions_ass:
+            sub_chain = "subtitles=captions.ass,"
+
+        # Filter graph: video subtitle burn-in + (optional) music mix.
+        filter_parts = []
+        if sub_chain:
+            filter_parts.append(f"[0:v]{sub_chain[:-1]}[v]")
+            video_map = ["-map", "[v]"]
+        else:
+            video_map = ["-map", "0:v"]
+
         if music_path:
             audio_in  = ["-i", str(vo_path), "-i", str(music_path)]
-            af        = (f"[1:a]aloop=loop=-1:size=2e+09,volume={music_vol}[m];"
-                         f"[0:a][m]amix=inputs=2:duration=first:dropout_transition=3[aout]")
-            audio_map = ["-filter_complex", af, "-map", "0:v", "-map", "[aout]"]
+            filter_parts.append(
+                f"[2:a]aloop=loop=-1:size=2e+09,volume={music_vol}[m];"
+                f"[1:a][m]amix=inputs=2:duration=first:dropout_transition=3[aout]"
+            )
+            audio_map = ["-map", "[aout]"]
         else:
             audio_in  = ["-i", str(vo_path)]
-            audio_map = ["-map", "0:v", "-map", "1:a"]
+            audio_map = ["-map", "1:a"]
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(footage_track),
-            *audio_in,
+        cmd = ["ffmpeg", "-y", "-i", str(footage_track), *audio_in]
+        if filter_parts:
+            cmd += ["-filter_complex", ";".join(filter_parts)]
+        cmd += [
             "-t", str(duration),
-            *audio_map,
+            *video_map, *audio_map,
             "-c:v", "libx264", "-preset", "medium", "-crf", "20",
             "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart", "-pix_fmt", "yuv420p",
-            str(final_mp4)
+            str(final_mp4),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                cwd=str(workspace))
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg assembly failed:\n{result.stderr[-2000:]}")
 
@@ -346,77 +428,93 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
 
         # ── Step 6: Thumbnail ────────────────────────────
         thumb = OUTPUT_DIR / f"{job_name}_thumbnail.jpg"
-        TW, TH = 1280, 720
-        img = Image.new("RGB", (TW, TH), (10, 8, 12))
+        used_ai_thumb = False
 
-        if footage_paths:
+        if cfg.get("use_ai_thumbnail") and cfg.get("openrouter_api_key"):
             try:
-                frame = workspace / "tframe.jpg"
-                subprocess.run([
-                    "ffmpeg", "-y", "-i", str(footage_paths[0]),
-                    "-ss", "00:00:04", "-vframes", "1",
-                    "-vf", f"scale={TW}:{TH}:force_original_aspect_ratio=increase,crop={TW}:{TH}",
-                    str(frame)
-                ], capture_output=True)
-                if frame.exists():
-                    bg = Image.open(frame).convert("RGB")
-                    bg = ImageEnhance.Brightness(bg).enhance(0.28)
-                    bg = bg.filter(ImageFilter.GaussianBlur(2))
-                    img.paste(bg)
+                from engines import thumbnail as thumb_engine
+                thumb_engine.generate(
+                    cfg["openrouter_api_key"], title, thumb,
+                    variants=int(cfg.get("thumbnail_variants", 1) or 1),
+                    on_log=log,
+                )
+                used_ai_thumb = True
+            except Exception as e:
+                log(f"⚠️  AI thumbnail failed, falling back to legacy: {e}")
+
+        if not used_ai_thumb:
+            TW, TH = 1280, 720
+            img = Image.new("RGB", (TW, TH), (10, 8, 12))
+
+            if footage_paths:
+                try:
+                    frame = workspace / "tframe.jpg"
+                    subprocess.run([
+                        "ffmpeg", "-y", "-i", str(footage_paths[0]),
+                        "-ss", "00:00:04", "-vframes", "1",
+                        "-vf", f"scale={TW}:{TH}:force_original_aspect_ratio=increase,crop={TW}:{TH}",
+                        str(frame)
+                    ], capture_output=True)
+                    if frame.exists():
+                        bg = Image.open(frame).convert("RGB")
+                        bg = ImageEnhance.Brightness(bg).enhance(0.28)
+                        bg = bg.filter(ImageFilter.GaussianBlur(2))
+                        img.paste(bg)
+                except Exception:
+                    pass
+
+            draw = ImageDraw.Draw(img)
+            vig  = Image.new("RGBA", (TW, TH), (0, 0, 0, 0))
+            vd   = ImageDraw.Draw(vig)
+            for i in range(300):
+                alpha = int((i / 300) ** 1.9 * 215)
+                vd.rectangle([i, i, TW-i, TH-i], outline=(0, 0, 0, alpha))
+            img.paste(Image.new("RGB", (TW, TH), (0,0,0)), mask=vig.split()[3])
+
+            draw.rectangle([0, 0, TW, 7], fill=(190, 18, 18))
+            draw.rectangle([0, TH-7, TW, TH], fill=(190, 18, 18))
+
+            font_candidates = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                "C:/Windows/Fonts/arialbd.ttf",
+                "/Library/Fonts/Arial Bold.ttf",
+                "/System/Library/Fonts/Helvetica.ttc",
+            ]
+            bold_font = next((f for f in font_candidates if Path(f).exists()), None)
+            try:
+                f_sm    = ImageFont.truetype(bold_font, 24) if bold_font else ImageFont.load_default()
+                f_title = ImageFont.truetype(bold_font, 76) if bold_font else ImageFont.load_default()
+                f_tag   = ImageFont.truetype(bold_font, 26) if bold_font else ImageFont.load_default()
             except Exception:
-                pass
+                f_sm = f_title = f_tag = ImageFont.load_default()
 
-        draw = ImageDraw.Draw(img)
-        vig  = Image.new("RGBA", (TW, TH), (0, 0, 0, 0))
-        vd   = ImageDraw.Draw(vig)
-        for i in range(300):
-            alpha = int((i / 300) ** 1.9 * 215)
-            vd.rectangle([i, i, TW-i, TH-i], outline=(0, 0, 0, alpha))
-        img.paste(Image.new("RGB", (TW, TH), (0,0,0)), mask=vig.split()[3])
+            draw.text((30, 24), "OBSCURA VAULT", font=f_sm, fill=(190, 18, 18))
 
-        draw.rectangle([0, 0, TW, 7], fill=(190, 18, 18))
-        draw.rectangle([0, TH-7, TW, TH], fill=(190, 18, 18))
+            words, lines2, current2 = title.upper().split(), [], ""
+            for word in words:
+                test = (current2 + " " + word).strip()
+                if len(test) <= 22:
+                    current2 = test
+                else:
+                    if current2:
+                        lines2.append(current2)
+                    current2 = word
+            if current2:
+                lines2.append(current2)
 
-        font_candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-            "C:/Windows/Fonts/arialbd.ttf",
-            "/Library/Fonts/Arial Bold.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-        ]
-        bold_font = next((f for f in font_candidates if Path(f).exists()), None)
-        try:
-            f_sm    = ImageFont.truetype(bold_font, 24) if bold_font else ImageFont.load_default()
-            f_title = ImageFont.truetype(bold_font, 76) if bold_font else ImageFont.load_default()
-            f_tag   = ImageFont.truetype(bold_font, 26) if bold_font else ImageFont.load_default()
-        except Exception:
-            f_sm = f_title = f_tag = ImageFont.load_default()
+            lh = 90
+            start_y = (TH - len(lines2) * lh) // 2 - 30
+            for i2, line in enumerate(lines2):
+                y = start_y + i2 * lh
+                draw.text((54, y+5), line, font=f_title, fill=(0,0,0))
+                draw.text((52, y), line, font=f_title, fill=(248, 240, 220))
 
-        draw.text((30, 24), "OBSCURA VAULT", font=f_sm, fill=(190, 18, 18))
+            draw.text((30, TH - 52), "History They Buried. We Dig It Up.",
+                      font=f_tag, fill=(155, 135, 100))
 
-        words, lines2, current2 = title.upper().split(), [], ""
-        for word in words:
-            test = (current2 + " " + word).strip()
-            if len(test) <= 22:
-                current2 = test
-            else:
-                if current2:
-                    lines2.append(current2)
-                current2 = word
-        if current2:
-            lines2.append(current2)
+            img.save(str(thumb), "JPEG", quality=95)
 
-        lh = 90
-        start_y = (TH - len(lines2) * lh) // 2 - 30
-        for i2, line in enumerate(lines2):
-            y = start_y + i2 * lh
-            draw.text((54, y+5), line, font=f_title, fill=(0,0,0))
-            draw.text((52, y), line, font=f_title, fill=(248, 240, 220))
-
-        draw.text((30, TH - 52), "History They Buried. We Dig It Up.",
-                  font=f_tag, fill=(155, 135, 100))
-
-        img.save(str(thumb), "JPEG", quality=95)
         log(f"✅ Thumbnail: {thumb.name}")
 
         # ── Step 7: Metadata ─────────────────────────────
@@ -455,12 +553,41 @@ TIMESTAMPS
         (workspace / "description.txt").write_text(description)
 
         # ── Cleanup raw footage ───────────────────────────
-        for f in footage_dir.iterdir():
+        raw_dir = workspace / "footage"
+        if raw_dir.exists():
+            for f in raw_dir.iterdir():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+            log("🗑️ Raw footage cleaned up")
+
+        # ── Auto-upload to YouTube (if enabled) ──────────
+        upload_result = None
+        if cfg.get("auto_upload"):
             try:
-                f.unlink()
-            except Exception:
-                pass
-        log("🗑️ Raw footage cleaned up")
+                from engines import upload as up
+                if up.is_installed() and up.has_token():
+                    progress(98, "Uploading to YouTube...")
+                    log("📤 Auto-upload starting...")
+                    srt_sibling = OUTPUT_DIR / f"{job_name}.srt"
+                    upload_result = up.publish(
+                        final_mp4,
+                        title=title,
+                        description=description,
+                        tags=meta["tags"],
+                        thumbnail_path=(thumb if thumb.exists() else None),
+                        caption_srt_path=(srt_sibling if srt_sibling.exists() else None),
+                        privacy_status=cfg.get("default_privacy", "private"),
+                        contains_synthetic_media=cfg.get(
+                            "contains_synthetic_media", True),
+                        on_log=log,
+                    )
+                    log(f"   ✅ live at {upload_result['url']}")
+                else:
+                    log("⚠️  auto-upload on but YouTube not authorized; skipping")
+            except Exception as e:
+                log(f"⚠️  auto-upload failed (video still saved locally): {e}")
 
         # ── Done ─────────────────────────────────────────
         job["result"] = {
@@ -471,6 +598,7 @@ TIMESTAMPS
             "duration":    f"{m}:{s:02d}",
             "size_mb":     round(mb, 1),
             "job_name":    job_name,
+            "youtube":     upload_result,
         }
         progress(100, "Complete! 🎬")
         job["status"] = "done"
@@ -667,6 +795,470 @@ def install_packages():
     cmd = [sys.executable, "-m", "pip", "install", "--break-system-packages"] + packages
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     return jsonify({"ok": result.returncode == 0, "output": result.stdout[-2000:]})
+
+# ════════════════════════════════════════════════════════
+#  AI / OpenRouter routes
+# ════════════════════════════════════════════════════════
+
+@app.route("/api/openrouter/validate", methods=["POST"])
+def validate_openrouter():
+    import llm
+    key = (request.json or {}).get("key", "").strip()
+    return jsonify({"valid": llm.validate_key(key)})
+
+
+# Async script-generation jobs (separate from video pipeline jobs).
+script_jobs = {}   # job_id -> {status, log, result, error}
+
+
+def _run_script_job(job_id: str, idea: str, minutes: float, api_key: str):
+    from engines import script as script_engine
+    from engines import seo    as seo_engine
+    job = script_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[script {job_id}] {msg}")
+
+    try:
+        if not api_key:
+            raise RuntimeError("OpenRouter key not set in Settings.")
+
+        sc = script_engine.generate_script(api_key, idea, minutes, on_log=log)
+
+        # Use planned duration to stamp chapters; the real audio duration
+        # will be re-stamped by the video pipeline if it differs significantly.
+        total_secs = (sc["word_count"] / script_engine.WORDS_PER_MINUTE) * 60
+        seo = seo_engine.build_seo_pack(api_key, idea, sc["outline"],
+                                        total_secs, on_log=log)
+
+        job["result"] = {
+            "title":               seo["title"],
+            "title_alternatives":  seo["title_alternatives"],
+            "script":              sc["script"],
+            "word_count":          sc["word_count"],
+            "outline":             sc["outline"],
+            "description":         seo["description"],
+            "tags":                seo["tags"],
+            "chapters":            seo["chapters"],
+            "primary_keyword":     seo["primary_keyword"],
+            "model":               sc["model"],
+            "warning":             sc.get("warning"),
+        }
+        job["status"] = "done"
+        log("✅ done")
+
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/generate-script", methods=["POST"])
+def generate_script_route():
+    data    = request.json or {}
+    idea    = (data.get("idea") or "").strip()
+    minutes = float(data.get("minutes") or 10.0)
+
+    if len(idea) < 8:
+        return jsonify({"error": "Idea is too short (min 8 chars)."}), 400
+    if not (1 <= minutes <= 30):
+        return jsonify({"error": "Minutes must be between 1 and 30."}), 400
+
+    cfg = load_config()
+    api_key = cfg.get("openrouter_api_key", "").strip()
+    if not api_key:
+        return jsonify({"error": "Set your OpenRouter key in Settings first."}), 400
+
+    job_id = "s_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    script_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(
+        target=_run_script_job,
+        args=(job_id, idea, minutes, api_key),
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/script-status/<job_id>")
+def script_status(job_id):
+    job = script_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-30:],
+        "result": job["result"],
+        "error":  job["error"],
+    })
+
+
+# ── Standalone thumbnail preview (no full pipeline) ──────
+thumb_jobs = {}   # job_id -> {status, log, result, error}
+
+
+def _run_thumb_job(job_id: str, title: str, variants: int, api_key: str):
+    from engines import thumbnail as thumb_engine
+    job = thumb_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[thumb {job_id}] {msg}")
+
+    try:
+        slug = re.sub(r"[^\w\-]+", "_", title.lower())[:40] or "preview"
+        ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out  = OUTPUT_DIR / f"preview_{ts}_{slug}.jpg"
+        result = thumb_engine.generate(api_key, title, out,
+                                       variants=variants, on_log=log)
+        job["result"] = {
+            "primary":      Path(result["primary"]).name,
+            "variants":     [Path(p).name for p in result["variants"]],
+            "punchline":    result["punchline"],
+            "image_prompt": result["image_prompt"],
+        }
+        job["status"] = "done"
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/test-thumbnail", methods=["POST"])
+def test_thumbnail():
+    data     = request.json or {}
+    title    = (data.get("title") or "").strip()
+    variants = int(data.get("variants") or 1)
+
+    if len(title) < 4:
+        return jsonify({"error": "Title too short."}), 400
+    cfg = load_config()
+    api_key = cfg.get("openrouter_api_key", "").strip()
+    if not api_key:
+        return jsonify({"error": "Set OpenRouter key in Settings first."}), 400
+
+    job_id = "t_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    thumb_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(
+        target=_run_thumb_job,
+        args=(job_id, title, max(1, min(variants, 3)), api_key),
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/thumb-status/<job_id>")
+def thumb_status(job_id):
+    job = thumb_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-30:],
+        "result": job["result"],
+        "error":  job["error"],
+    })
+
+
+# ── Captions: status + install dependency ───────────────
+@app.route("/api/captions/status", methods=["GET"])
+def captions_status():
+    from engines import captions as cap
+    return jsonify({"available": cap.is_available()})
+
+
+# Install jobs (so the UI can stream pip output without a long blocking req)
+install_jobs = {}
+
+
+def _run_install_captions(job_id: str):
+    job = install_jobs[job_id]
+    cmd = [sys.executable, "-m", "pip", "install",
+           "--break-system-packages", "faster-whisper"]
+    job["log"].append("$ " + " ".join(cmd))
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        for line in iter(proc.stdout.readline, ""):
+            line = line.rstrip()
+            if line:
+                job["log"].append(line)
+                if len(job["log"]) > 400:
+                    job["log"] = job["log"][-300:]
+        proc.wait()
+        job["status"] = "done" if proc.returncode == 0 else "error"
+        if proc.returncode != 0:
+            job["error"] = f"pip exited {proc.returncode}"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"]  = str(e)
+
+
+@app.route("/api/captions/install", methods=["POST"])
+def captions_install():
+    job_id = "i_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    install_jobs[job_id] = {"status": "running", "log": [], "error": None}
+    threading.Thread(target=_run_install_captions, args=(job_id,),
+                     daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/captions/install-status/<job_id>")
+def captions_install_status(job_id):
+    job = install_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-50:],
+        "error":  job["error"],
+    })
+
+
+# ════════════════════════════════════════════════════════
+#  YouTube upload routes
+# ════════════════════════════════════════════════════════
+
+@app.route("/api/youtube/status", methods=["GET"])
+def yt_status():
+    from engines import upload as up
+    info = up.channel_info() if (up.is_installed() and up.has_token()) else None
+    return jsonify({
+        "installed":   up.is_installed(),
+        "has_secrets": up.has_secrets(),
+        "has_token":   up.has_token(),
+        "channel":     info,
+    })
+
+
+def _run_install_youtube(job_id: str):
+    job = install_jobs[job_id]
+    cmd = [sys.executable, "-m", "pip", "install", "--break-system-packages",
+           "google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
+    job["log"].append("$ " + " ".join(cmd))
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        for line in iter(proc.stdout.readline, ""):
+            line = line.rstrip()
+            if line:
+                job["log"].append(line)
+                if len(job["log"]) > 400:
+                    job["log"] = job["log"][-300:]
+        proc.wait()
+        job["status"] = "done" if proc.returncode == 0 else "error"
+        if proc.returncode != 0:
+            job["error"] = f"pip exited {proc.returncode}"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"]  = str(e)
+
+
+@app.route("/api/youtube/install", methods=["POST"])
+def yt_install():
+    job_id = "yi_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    install_jobs[job_id] = {"status": "running", "log": [], "error": None}
+    threading.Thread(target=_run_install_youtube, args=(job_id,),
+                     daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/youtube/install-status/<job_id>")
+def yt_install_status(job_id):
+    job = install_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-50:],
+        "error":  job["error"],
+    })
+
+
+@app.route("/api/youtube/upload-secrets", methods=["POST"])
+def yt_upload_secrets():
+    if "file" not in request.files:
+        return jsonify({"error": "No file"}), 400
+    f = request.files["file"]
+    raw = f.read()
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return jsonify({"error": "Not valid JSON."}), 400
+    if not (parsed.get("installed") or parsed.get("web")):
+        return jsonify({"error": "Doesn't look like an OAuth client_secrets file."}), 400
+
+    from engines import upload as up
+    up.SECRETS_DIR.mkdir(parents=True, exist_ok=True)
+    up.CLIENT_SECRETS_PATH.write_bytes(raw)
+    # Wipe any old token — wrong client.
+    if up.TOKEN_PATH.exists():
+        up.TOKEN_PATH.unlink()
+    return jsonify({"ok": True})
+
+
+# Authorization is async because run_local_server() blocks on the
+# user clicking through the consent screen.
+auth_jobs = {}
+
+
+def _run_authorize(job_id: str):
+    from engines import upload as up
+    job = auth_jobs[job_id]
+    try:
+        up.authorize(open_browser=True)
+        job["status"] = "done"
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/youtube/authorize", methods=["POST"])
+def yt_authorize():
+    from engines import upload as up
+    if not up.is_installed():
+        return jsonify({"error": "Install YouTube libs first."}), 400
+    if not up.has_secrets():
+        return jsonify({"error": "Upload client_secrets.json first."}), 400
+
+    job_id = "ya_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    auth_jobs[job_id] = {"status": "running", "log": [], "error": None}
+    threading.Thread(target=_run_authorize, args=(job_id,), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/youtube/auth-status/<job_id>")
+def yt_auth_status(job_id):
+    job = auth_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-30:],
+        "error":  job["error"],
+    })
+
+
+@app.route("/api/youtube/revoke", methods=["POST"])
+def yt_revoke():
+    from engines import upload as up
+    up.revoke_token()
+    return jsonify({"ok": True})
+
+
+# Upload jobs (real video → YouTube)
+yt_upload_jobs = {}
+
+
+def _run_yt_upload(job_id: str, video_filename: str, options: dict):
+    from engines import upload as up
+    job = yt_upload_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[yt-up {job_id}] {msg}")
+
+    def progress(pct):
+        job["progress"] = pct
+
+    try:
+        video_path = OUTPUT_DIR / video_filename
+        if not video_path.exists():
+            raise FileNotFoundError(f"video not found: {video_filename}")
+
+        # Look for sibling assets
+        stem  = video_path.stem
+        thumb = OUTPUT_DIR / f"{stem}_thumbnail.jpg"
+        srt   = OUTPUT_DIR / f"{stem}.srt"
+
+        # Pull metadata from workspace if it exists (best source for title/desc/tags)
+        workspace_meta = WORKSPACE / stem / "metadata.json"
+        if workspace_meta.exists():
+            meta = json.loads(workspace_meta.read_text())
+        else:
+            meta = {
+                "title": options.get("title") or stem,
+                "description": options.get("description") or "",
+                "tags": options.get("tags") or [],
+            }
+
+        title       = options.get("title")       or meta.get("title")       or stem
+        description = options.get("description") or meta.get("description") or ""
+        tags        = options.get("tags")        or meta.get("tags")        or []
+
+        result = up.publish(
+            video_path,
+            title=title, description=description, tags=tags,
+            thumbnail_path=(thumb if thumb.exists() else None),
+            caption_srt_path=(srt if srt.exists() else None),
+            privacy_status=options.get("privacy_status", "private"),
+            publish_at=options.get("publish_at") or None,
+            contains_synthetic_media=options.get("contains_synthetic_media", True),
+            on_progress=progress, on_log=log,
+        )
+        job["result"] = result
+        job["status"] = "done"
+
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/youtube/upload-video", methods=["POST"])
+def yt_upload_video():
+    data = request.json or {}
+    video_filename = data.get("video", "")
+    if not video_filename:
+        return jsonify({"error": "video filename required"}), 400
+
+    from engines import upload as up
+    if not (up.is_installed() and up.has_token()):
+        return jsonify({"error": "YouTube not authorized."}), 400
+
+    options = {
+        "title":          data.get("title"),
+        "description":    data.get("description"),
+        "tags":           data.get("tags"),
+        "privacy_status": data.get("privacy_status", "private"),
+        "publish_at":     data.get("publish_at"),
+        "contains_synthetic_media": data.get("contains_synthetic_media", True),
+    }
+
+    job_id = "yu_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    yt_upload_jobs[job_id] = {
+        "status": "running", "progress": 0, "log": [], "result": None, "error": None,
+    }
+    threading.Thread(target=_run_yt_upload,
+                     args=(job_id, video_filename, options), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/youtube/upload-status/<job_id>")
+def yt_upload_status(job_id):
+    job = yt_upload_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status":   job["status"],
+        "progress": job.get("progress", 0),
+        "log":      job["log"][-30:],
+        "result":   job["result"],
+        "error":    job["error"],
+    })
+
 
 if __name__ == "__main__":
     import webbrowser

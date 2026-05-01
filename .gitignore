@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Pipeline artifacts
+workspace/
+output/
+data/cache/
+data/*.db
+data/*.db-*
+
+# Local config (real keys)
+config.json
+
+# OS
+.DS_Store
+Thumbs.db
