@@ -41,6 +41,7 @@ def load_config():
         return json.loads(CONFIG_PATH.read_text())
     return {
         "pexels_api_key": "",
+        "openrouter_api_key": "",
         "tts_voice": "en-US-GuyNeural",
         "music_volume": 0.12,
         "video_resolution": [1920, 1080],
@@ -667,6 +668,107 @@ def install_packages():
     cmd = [sys.executable, "-m", "pip", "install", "--break-system-packages"] + packages
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     return jsonify({"ok": result.returncode == 0, "output": result.stdout[-2000:]})
+
+# ════════════════════════════════════════════════════════
+#  AI / OpenRouter routes
+# ════════════════════════════════════════════════════════
+
+@app.route("/api/openrouter/validate", methods=["POST"])
+def validate_openrouter():
+    import llm
+    key = (request.json or {}).get("key", "").strip()
+    return jsonify({"valid": llm.validate_key(key)})
+
+
+# Async script-generation jobs (separate from video pipeline jobs).
+script_jobs = {}   # job_id -> {status, log, result, error}
+
+
+def _run_script_job(job_id: str, idea: str, minutes: float, api_key: str):
+    from engines import script as script_engine
+    from engines import seo    as seo_engine
+    job = script_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[script {job_id}] {msg}")
+
+    try:
+        if not api_key:
+            raise RuntimeError("OpenRouter key not set in Settings.")
+
+        sc = script_engine.generate_script(api_key, idea, minutes, on_log=log)
+
+        # Use planned duration to stamp chapters; the real audio duration
+        # will be re-stamped by the video pipeline if it differs significantly.
+        total_secs = (sc["word_count"] / script_engine.WORDS_PER_MINUTE) * 60
+        seo = seo_engine.build_seo_pack(api_key, idea, sc["outline"],
+                                        total_secs, on_log=log)
+
+        job["result"] = {
+            "title":               seo["title"],
+            "title_alternatives":  seo["title_alternatives"],
+            "script":              sc["script"],
+            "word_count":          sc["word_count"],
+            "outline":             sc["outline"],
+            "description":         seo["description"],
+            "tags":                seo["tags"],
+            "chapters":            seo["chapters"],
+            "primary_keyword":     seo["primary_keyword"],
+            "model":               sc["model"],
+            "warning":             sc.get("warning"),
+        }
+        job["status"] = "done"
+        log("✅ done")
+
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/generate-script", methods=["POST"])
+def generate_script_route():
+    data    = request.json or {}
+    idea    = (data.get("idea") or "").strip()
+    minutes = float(data.get("minutes") or 10.0)
+
+    if len(idea) < 8:
+        return jsonify({"error": "Idea is too short (min 8 chars)."}), 400
+    if not (1 <= minutes <= 30):
+        return jsonify({"error": "Minutes must be between 1 and 30."}), 400
+
+    cfg = load_config()
+    api_key = cfg.get("openrouter_api_key", "").strip()
+    if not api_key:
+        return jsonify({"error": "Set your OpenRouter key in Settings first."}), 400
+
+    job_id = "s_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    script_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(
+        target=_run_script_job,
+        args=(job_id, idea, minutes, api_key),
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/script-status/<job_id>")
+def script_status(job_id):
+    job = script_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-30:],
+        "result": job["result"],
+        "error":  job["error"],
+    })
+
 
 if __name__ == "__main__":
     import webbrowser

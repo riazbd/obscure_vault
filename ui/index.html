@@ -721,6 +721,29 @@ input[type="range"]::-webkit-slider-thumb {
 
         <div class="row">
           <div>
+            <!-- AI script generator -->
+            <div class="card" style="border-color:var(--gold);border-width:1px;border-style:solid">
+              <div class="card-title" style="color:var(--gold)">⚡ Generate Script with AI (free)</div>
+              <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+                Drop in a topic — we'll produce a working title, full narration, and SEO description
+                using free OpenRouter models. Set your key in Settings first.
+              </p>
+              <div class="form-group">
+                <label class="form-label">Topic / Idea</label>
+                <input class="form-input" id="ai-idea" type="text"
+                  placeholder="e.g. The 1959 Dyatlov Pass incident and what Soviet investigators hid">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Target length (minutes)</label>
+                <input class="form-input" id="ai-minutes" type="number" min="3" max="20" step="1" value="10" style="max-width:160px">
+              </div>
+              <button class="btn btn-gold btn-full" id="ai-gen-btn" onclick="generateScriptWithAI()">
+                Generate Title + Script + SEO
+              </button>
+              <div id="ai-status" style="margin-top:12px;font-size:12px;color:var(--text-dim);min-height:18px"></div>
+              <pre id="ai-log" style="display:none;max-height:160px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:10px;font-size:11px;color:var(--text-dim);margin-top:8px;white-space:pre-wrap"></pre>
+            </div>
+
             <!-- Input -->
             <div class="card">
               <div class="card-title">Video Input</div>
@@ -890,6 +913,23 @@ A 15-minute video needs ~2160 words."
         <p>Configure API keys, voice, and pipeline options.</p>
       </div>
       <div style="padding:32px 36px">
+
+        <!-- OpenRouter -->
+        <div class="card">
+          <div class="card-title">OpenRouter API Key (AI Script + SEO)</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+            Powers automatic script writing, title, description, and tag generation using
+            <strong style="color:var(--gold)">free</strong> models (DeepSeek V3, Llama 3.3 70B, Qwen 2.5 72B…). Get a free key at
+            <a href="https://openrouter.ai/keys" target="_blank" style="color:var(--gold)">openrouter.ai/keys</a>.
+          </p>
+          <div class="input-with-action">
+            <input class="form-input" id="openrouter-key" type="password" placeholder="sk-or-v1-...">
+            <button class="btn btn-gold" onclick="validateAndSaveOpenrouter()">
+              Validate &amp; Save
+            </button>
+          </div>
+          <div id="openrouter-status" style="margin-top:10px;font-size:12px;color:var(--text-dim)"></div>
+        </div>
 
         <!-- Pexels -->
         <div class="card">
@@ -1354,6 +1394,77 @@ dz.addEventListener('drop', e => {
 });
 
 /* ════════════════════════════════════════════════════════
+   AI SCRIPT GENERATION
+════════════════════════════════════════════════════════ */
+let aiScriptPoll = null;
+
+async function generateScriptWithAI() {
+  const idea    = document.getElementById('ai-idea').value.trim();
+  const minutes = parseFloat(document.getElementById('ai-minutes').value || '10');
+  if (idea.length < 8) { toast('Enter a topic first.', 'error'); return; }
+
+  const btn   = document.getElementById('ai-gen-btn');
+  const stat  = document.getElementById('ai-status');
+  const logEl = document.getElementById('ai-log');
+  btn.disabled    = true;
+  btn.textContent = 'Working...';
+  stat.textContent = 'Sending to OpenRouter...';
+  logEl.style.display = 'block';
+  logEl.textContent   = '';
+
+  let r, d;
+  try {
+    r = await fetch('/api/generate-script', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ idea, minutes }),
+    });
+    d = await r.json();
+  } catch (e) {
+    stat.textContent = ''; toast('Network error.', 'error');
+    btn.disabled = false; btn.textContent = 'Generate Title + Script + SEO';
+    return;
+  }
+  if (!r.ok) {
+    stat.textContent = '';
+    toast(d.error || 'Failed.', 'error');
+    btn.disabled = false; btn.textContent = 'Generate Title + Script + SEO';
+    return;
+  }
+
+  const jobId = d.job_id;
+  if (aiScriptPoll) clearInterval(aiScriptPoll);
+  aiScriptPoll = setInterval(async () => {
+    const sr = await fetch('/api/script-status/' + jobId);
+    const sd = await sr.json();
+    logEl.textContent = (sd.log || []).join('\n');
+    logEl.scrollTop   = logEl.scrollHeight;
+
+    if (sd.status === 'done') {
+      clearInterval(aiScriptPoll); aiScriptPoll = null;
+      const res = sd.result;
+      document.getElementById('vid-title').value  = res.title || '';
+      document.getElementById('vid-script').value = res.script || '';
+      window.aiResult = res;   // hold for description copy
+      updateWordCount();
+      stat.innerHTML  = '<span class="badge badge-ok">✓ Generated — review, then click Generate Video below.</span>'
+                      + '<div style="margin-top:8px;color:var(--text-dim)">Model: ' + (res.model||'?')
+                      + ' · Words: ' + (res.word_count||0)
+                      + (res.warning ? ' · <span style="color:#e6a23a">⚠ ' + res.warning + '</span>' : '')
+                      + '</div>';
+      btn.disabled = false; btn.textContent = 'Generate Title + Script + SEO';
+      toast('Script ready.', 'ok');
+    } else if (sd.status === 'error') {
+      clearInterval(aiScriptPoll); aiScriptPoll = null;
+      stat.innerHTML = '<span class="badge badge-error">✗ ' + (sd.error || 'Failed') + '</span>';
+      btn.disabled = false; btn.textContent = 'Generate Title + Script + SEO';
+      toast('Generation failed.', 'error');
+    } else {
+      stat.textContent = 'Working... (' + ((sd.log || []).slice(-1)[0] || '') + ')';
+    }
+  }, 1500);
+}
+
+/* ════════════════════════════════════════════════════════
    SETTINGS
 ════════════════════════════════════════════════════════ */
 async function loadSettings() {
@@ -1362,6 +1473,7 @@ async function loadSettings() {
 
   const key = d.pexels_api_key || '';
   document.getElementById('pexels-key').value   = key;
+  document.getElementById('openrouter-key').value = d.openrouter_api_key || '';
   document.getElementById('tts-voice').value    = d.tts_voice || 'en-US-GuyNeural';
   document.getElementById('music-vol').value    = d.music_volume || 0.12;
   document.getElementById('vol-val').textContent= Math.round((d.music_volume||0.12)*100)+'%';
@@ -1373,6 +1485,31 @@ async function loadSettings() {
   if (key) {
     document.getElementById('pexels-status').innerHTML =
       '<span class="badge badge-ok">✓ Key saved</span>';
+  }
+  if (d.openrouter_api_key) {
+    document.getElementById('openrouter-status').innerHTML =
+      '<span class="badge badge-ok">✓ Key saved</span>';
+  }
+}
+
+async function validateAndSaveOpenrouter() {
+  const key = document.getElementById('openrouter-key').value.trim();
+  if (!key) { toast('Enter a key first.', 'error'); return; }
+
+  const status = document.getElementById('openrouter-status');
+  status.innerHTML = '<span style="color:var(--text-dim);font-size:12px">Validating against free model...</span>';
+  const r = await fetch('/api/openrouter/validate', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ key })
+  });
+  const d = await r.json();
+  if (d.valid) {
+    status.innerHTML = '<span class="badge badge-ok">✓ Valid key — saved!</span>';
+    await saveSettings();
+    toast('OpenRouter key validated and saved!', 'ok');
+  } else {
+    status.innerHTML = '<span class="badge badge-error">✗ Invalid key or no free models available</span>';
+    toast('OpenRouter validation failed.', 'error');
   }
 }
 
@@ -1399,11 +1536,12 @@ async function validateAndSavePexels() {
 async function saveSettings() {
   const res   = document.getElementById('vid-res').value.split('x').map(Number);
   const cfg = {
-    pexels_api_key:   document.getElementById('pexels-key').value.trim(),
-    tts_voice:        document.getElementById('tts-voice').value,
-    music_volume:     parseFloat(document.getElementById('music-vol').value),
-    video_resolution: res,
-    max_clips:        parseInt(document.getElementById('max-clips').value),
+    pexels_api_key:     document.getElementById('pexels-key').value.trim(),
+    openrouter_api_key: document.getElementById('openrouter-key').value.trim(),
+    tts_voice:          document.getElementById('tts-voice').value,
+    music_volume:       parseFloat(document.getElementById('music-vol').value),
+    video_resolution:   res,
+    max_clips:          parseInt(document.getElementById('max-clips').value),
   };
   await fetch('/api/config', {
     method: 'POST', headers: {'Content-Type':'application/json'},
