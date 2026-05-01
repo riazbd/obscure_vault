@@ -1260,6 +1260,193 @@ def yt_upload_status(job_id):
     })
 
 
+# ════════════════════════════════════════════════════════
+#  Idea engine routes
+# ════════════════════════════════════════════════════════
+
+idea_jobs = {}   # harvest jobs
+
+
+def _run_harvest(job_id: str, params: dict, openrouter_key: str):
+    from engines import ideas as I
+    job = idea_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[ideas {job_id}] {msg}")
+
+    try:
+        result = I.run_harvest(
+            yt_seeds=params.get("yt_seeds") or None,
+            subreddits=params.get("subreddits") or None,
+            include_wikipedia=bool(params.get("include_wikipedia", True)),
+            score_with_openrouter_key=openrouter_key,
+            niche=params.get("niche") or I.DEFAULT_NICHE,
+            on_log=log,
+        )
+        job["result"] = result
+        job["status"] = "done"
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/ideas/harvest", methods=["POST"])
+def ideas_harvest():
+    data = request.json or {}
+    cfg  = load_config()
+    job_id = "h_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    idea_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(
+        target=_run_harvest,
+        args=(job_id, data, cfg.get("openrouter_api_key", "").strip()),
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/ideas/harvest-status/<job_id>")
+def ideas_harvest_status(job_id):
+    job = idea_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-30:],
+        "result": job["result"],
+        "error":  job["error"],
+    })
+
+
+@app.route("/api/ideas/list", methods=["GET"])
+def ideas_list():
+    from engines import ideas as I
+    items = I.list_all()
+    status_filter = request.args.get("status", "")
+    if status_filter:
+        items = [it for it in items if it.get("status") == status_filter]
+    return jsonify(items)
+
+
+@app.route("/api/ideas/<idea_id>/status", methods=["POST"])
+def ideas_set_status(idea_id):
+    from engines import ideas as I
+    new_status = (request.json or {}).get("status", "")
+    if new_status not in {"pending", "approved", "rejected", "produced"}:
+        return jsonify({"error": "bad status"}), 400
+    patch = {}
+    for k in ("job_name", "video_id"):
+        if k in (request.json or {}):
+            patch[k] = request.json[k]
+    it = I.update_status(idea_id, new_status, **patch)
+    if not it:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(it)
+
+
+@app.route("/api/ideas/<idea_id>", methods=["DELETE"])
+def ideas_delete(idea_id):
+    from engines import ideas as I
+    if I.delete(idea_id):
+        return jsonify({"ok": True})
+    return jsonify({"error": "not found"}), 404
+
+
+# Approve & Generate: chain idea → script → video pipeline.
+def _run_idea_to_video(job_id: str, idea: dict, minutes: float, cfg: dict):
+    from engines import script as script_engine
+    from engines import seo    as seo_engine
+    from engines import ideas  as I
+
+    job = script_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[idea-pipe {job_id}] {msg}")
+
+    try:
+        api_key = cfg.get("openrouter_api_key", "").strip()
+        if not api_key:
+            raise RuntimeError("OpenRouter key missing")
+
+        log(f"📜 generating script for: {idea['title'][:90]}")
+        sc = script_engine.generate_script(api_key, idea["title"], minutes,
+                                           on_log=log)
+        total_secs = (sc["word_count"] / script_engine.WORDS_PER_MINUTE) * 60
+        seo = seo_engine.build_seo_pack(api_key, idea["title"], sc["outline"],
+                                        total_secs, on_log=log)
+
+        # Now kick off the actual video pipeline
+        log("🎬 starting video pipeline...")
+        pipeline_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        jobs[pipeline_id] = {
+            "status": "running", "progress": 0, "stage": "Starting...",
+            "log": [], "result": None, "error": None, "duration": None,
+        }
+        t = threading.Thread(
+            target=run_pipeline_thread,
+            args=(pipeline_id, seo["title"], sc["script"], cfg),
+            daemon=True,
+        )
+        t.start()
+
+        # Mark idea as approved → produced (we don't wait for the
+        # pipeline to finish; UI tracks the pipeline separately).
+        I.update_status(idea["id"], "approved",
+                        pipeline_job=pipeline_id,
+                        scripted_title=seo["title"])
+        job["result"] = {
+            "title":       seo["title"],
+            "pipeline_id": pipeline_id,
+            "word_count":  sc["word_count"],
+        }
+        job["status"] = "done"
+        log(f"   ✅ pipeline {pipeline_id} running in background")
+
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/ideas/<idea_id>/produce", methods=["POST"])
+def ideas_produce(idea_id):
+    from engines import ideas as I
+    minutes = float((request.json or {}).get("minutes") or 10.0)
+
+    items = [it for it in I.list_all() if it["id"] == idea_id]
+    if not items:
+        return jsonify({"error": "idea not found"}), 404
+    idea = items[0]
+
+    cfg = load_config()
+    if not cfg.get("openrouter_api_key", "").strip():
+        return jsonify({"error": "OpenRouter key missing"}), 400
+
+    # Check no other pipeline running
+    for jid, j in jobs.items():
+        if j["status"] == "running":
+            return jsonify({"error": "A video is already being generated."}), 409
+
+    job_id = "ip_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    script_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(
+        target=_run_idea_to_video,
+        args=(job_id, idea, minutes, cfg),
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id})
+
+
 if __name__ == "__main__":
     import webbrowser
     print("\n" + "═"*55)

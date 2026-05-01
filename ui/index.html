@@ -557,6 +557,10 @@ input[type="range"]::-webkit-slider-thumb {
         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
         Setup
       </a>
+      <a class="nav-item" data-page="ideas" onclick="showPage('ideas')">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+        Ideas
+      </a>
       <a class="nav-item" data-page="generate" onclick="showPage('generate')">
         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.36a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
         Generate Video
@@ -853,6 +857,61 @@ A 15-minute video needs ~2160 words."
     <!-- ══════════════════════════════════════
          OUTPUTS PAGE
     ══════════════════════════════════════ -->
+    <div id="page-ideas" class="page">
+      <div class="page-header">
+        <h2>Ideas</h2>
+        <p>Auto-mined topics from YouTube Suggest, Reddit, and Wikipedia. Approve to script + render.</p>
+      </div>
+      <div style="padding:24px 36px">
+        <div class="card">
+          <div class="card-title">Harvest new ideas</div>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+            Pulls fresh ideas from free sources, dedups against what you already have,
+            and (if your OpenRouter key is set) scores each by niche fit.
+          </p>
+          <div class="row">
+            <div class="form-group">
+              <label class="form-label">YouTube seed terms (comma-separated)</label>
+              <input class="form-input" id="harv-yt" type="text"
+                placeholder="lost history, declassified, soviet mystery">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Subreddits (comma-separated)</label>
+              <input class="form-input" id="harv-subs" type="text"
+                placeholder="AskHistorians, UnresolvedMysteries">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Niche description (used for LLM scoring)</label>
+            <textarea class="form-textarea" id="harv-niche" rows="3"
+              style="min-height:64px"
+              placeholder="Obscura Vault — buried, suppressed, and forgotten history..."></textarea>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-primary" id="harv-btn" onclick="harvestIdeas()">
+              Harvest Now
+            </button>
+            <span id="harv-status" style="font-size:12px;color:var(--text-dim)"></span>
+          </div>
+          <pre id="harv-log" style="display:none;max-height:160px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:10px;font-size:11px;color:var(--text-dim);margin-top:8px;white-space:pre-wrap"></pre>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;margin-top:18px;margin-bottom:10px">
+          <select class="form-select" id="ideas-filter" style="max-width:200px" onchange="loadIdeas()">
+            <option value="pending" selected>Pending review</option>
+            <option value="approved">Approved</option>
+            <option value="produced">Produced</option>
+            <option value="rejected">Rejected</option>
+            <option value="">All</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="loadIdeas()">Refresh</button>
+          <span id="ideas-count" style="font-size:12px;color:var(--text-dim)"></span>
+        </div>
+
+        <div id="ideas-list"></div>
+      </div>
+    </div>
+
     <div id="page-outputs" class="page">
       <div class="page-header">
         <h2>My Videos</h2>
@@ -1184,6 +1243,7 @@ function showPage(id) {
   document.getElementById('page-' + id).classList.add('active');
   document.querySelector(`[data-page="${id}"]`).classList.add('active');
 
+  if (id === 'ideas')   loadIdeas();
   if (id === 'outputs') loadOutputs();
   if (id === 'music')   loadMusic();
   if (id === 'settings') loadSettings();
@@ -1606,6 +1666,137 @@ async function generateScriptWithAI() {
       stat.textContent = 'Working... (' + ((sd.log || []).slice(-1)[0] || '') + ')';
     }
   }, 1500);
+}
+
+/* ════════════════════════════════════════════════════════
+   IDEAS
+════════════════════════════════════════════════════════ */
+let harvestPoll = null;
+
+async function harvestIdeas() {
+  const btn = document.getElementById('harv-btn');
+  const stat = document.getElementById('harv-status');
+  const log  = document.getElementById('harv-log');
+  btn.disabled = true; btn.textContent = 'Harvesting...';
+  log.style.display = 'block'; log.textContent = '';
+  stat.textContent = 'starting...';
+
+  const ytSeeds = (document.getElementById('harv-yt').value || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const subs    = (document.getElementById('harv-subs').value || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const niche   = (document.getElementById('harv-niche').value || '').trim();
+
+  const r = await fetch('/api/ideas/harvest', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      yt_seeds: ytSeeds, subreddits: subs, niche,
+      include_wikipedia: true,
+    }),
+  });
+  const d = await r.json();
+
+  if (harvestPoll) clearInterval(harvestPoll);
+  harvestPoll = setInterval(async () => {
+    const sr = await fetch('/api/ideas/harvest-status/' + d.job_id);
+    const sd = await sr.json();
+    log.textContent = (sd.log || []).join('\n');
+    log.scrollTop = log.scrollHeight;
+    if (sd.status === 'done') {
+      clearInterval(harvestPoll); harvestPoll = null;
+      btn.disabled = false; btn.textContent = 'Harvest Now';
+      stat.innerHTML = `<span class="badge badge-ok">✓ +${sd.result?.added||0} new ideas</span>`;
+      toast(`Added ${sd.result?.added||0} ideas.`, 'ok');
+      loadIdeas();
+    } else if (sd.status === 'error') {
+      clearInterval(harvestPoll); harvestPoll = null;
+      btn.disabled = false; btn.textContent = 'Harvest Now';
+      stat.innerHTML = '<span class="badge badge-error">✗ ' + (sd.error || 'failed') + '</span>';
+    } else {
+      stat.textContent = 'working... ' + ((sd.log || []).slice(-1)[0] || '');
+    }
+  }, 1500);
+}
+
+async function loadIdeas() {
+  const status = document.getElementById('ideas-filter').value;
+  const r = await fetch('/api/ideas/list' + (status ? '?status=' + status : ''));
+  const items = await r.json();
+  const box = document.getElementById('ideas-list');
+  document.getElementById('ideas-count').textContent = items.length + ' shown';
+
+  if (!items.length) {
+    box.innerHTML = `<div class="empty-state"><p>No ideas in this bucket. Try harvesting.</p></div>`;
+    return;
+  }
+
+  box.innerHTML = items.map(it => {
+    const fit = (it.niche_fit !== null && it.niche_fit !== undefined)
+      ? Math.round(it.niche_fit * 100) + '%' : '—';
+    const fitColor = (it.niche_fit !== null && it.niche_fit !== undefined)
+      ? (it.niche_fit >= 0.7 ? 'var(--gold)' : (it.niche_fit >= 0.5 ? 'var(--text)' : 'var(--text-dim)'))
+      : 'var(--text-dim)';
+    const sourceTag = it.source.replace('_', ' ');
+    const isPending = it.status === 'pending';
+    return `
+      <div class="card" style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;gap:14px;align-items:flex-start">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;line-height:1.4">${escapeHTML(it.title)}</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:6px">
+              <span class="badge" style="background:#222;color:var(--text-dim)">${sourceTag}</span>
+              <span style="margin-left:10px">niche fit: <strong style="color:${fitColor}">${fit}</strong></span>
+              ${it.rationale ? `<span style="margin-left:10px;color:var(--text-muted)">${escapeHTML(it.rationale)}</span>` : ''}
+              ${it.source_url ? `<a href="${it.source_url}" target="_blank" style="margin-left:10px;color:var(--gold)">source ↗</a>` : ''}
+            </div>
+            ${it.scripted_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">→ scripted as: ${escapeHTML(it.scripted_title)}</div>` : ''}
+            <div style="font-size:10px;color:var(--text-dim);margin-top:4px">status: ${it.status}${it.pipeline_job ? ' (pipeline ' + it.pipeline_job + ')' : ''}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">
+            ${isPending ? `<button class="btn btn-gold btn-sm" onclick="produceIdea('${it.id}')">▶ Generate</button>` : ''}
+            ${isPending ? `<button class="btn btn-ghost btn-sm" onclick="setIdeaStatus('${it.id}','rejected')">Reject</button>` : ''}
+            ${it.status === 'rejected' || it.status === 'produced'
+              ? `<button class="btn btn-ghost btn-sm" onclick="setIdeaStatus('${it.id}','pending')">Restore</button>` : ''}
+            <button class="btn btn-danger btn-sm" onclick="deleteIdea('${it.id}')">🗑️</button>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+  ));
+}
+
+async function setIdeaStatus(id, status) {
+  await fetch('/api/ideas/' + id + '/status', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ status }),
+  });
+  loadIdeas();
+}
+
+async function deleteIdea(id) {
+  if (!confirm('Delete this idea?')) return;
+  await fetch('/api/ideas/' + id, { method: 'DELETE' });
+  loadIdeas();
+}
+
+async function produceIdea(id) {
+  const minutes = parseFloat(prompt('Target video length (minutes)?', '10') || '10');
+  if (!minutes || minutes < 3) return;
+  const r = await fetch('/api/ideas/' + id + '/produce', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ minutes }),
+  });
+  const d = await r.json();
+  if (!r.ok) { toast(d.error || 'Failed.', 'error'); return; }
+  toast('Scripting + rendering started — check the Generate page progress panel.', 'ok');
+  // Switch to Generate page so the user can watch progress
+  showPage('generate');
+  loadIdeas();
 }
 
 /* ════════════════════════════════════════════════════════
