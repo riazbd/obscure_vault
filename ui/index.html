@@ -989,6 +989,33 @@ A 15-minute video needs ~2160 words."
           </div>
         </div>
 
+        <!-- Smart B-roll -->
+        <div class="card">
+          <div class="card-title">Smart B-roll (semantic per-chunk footage)</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+            Splits the script into ~10 s chunks, asks the LLM for cinematographic
+            search queries per chunk, and picks one matching clip per chunk from
+            Pexels (and Pixabay if configured). Falls back to the legacy
+            substring-keyword search if anything goes wrong.
+          </p>
+          <div class="form-group">
+            <label class="form-label" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+              <input type="checkbox" id="smart-broll" style="width:18px;height:18px;accent-color:var(--gold)">
+              <span>Use smart B-roll (requires OpenRouter + Pexels keys above)</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Target chunk length (seconds)</label>
+            <input class="form-input" id="chunk-seconds" type="number" min="6" max="20" step="1" value="10" style="max-width:140px">
+            <div class="form-hint">Shorter chunks = more cuts = more visual variety, but more downloads.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Pixabay API key (optional, for extra footage)</label>
+            <input class="form-input" id="pixabay-key" type="password" placeholder="optional — sign up at pixabay.com/api/docs/">
+            <div class="form-hint">Extra free source. Pexels alone usually works fine.</div>
+          </div>
+        </div>
+
         <!-- AI Thumbnail -->
         <div class="card">
           <div class="card-title">AI Thumbnail</div>
@@ -1616,6 +1643,9 @@ async function loadSettings() {
   document.getElementById('thumb-variants').value = d.thumbnail_variants || 1;
   document.getElementById('burn-captions').checked = !!d.burn_captions;
   document.getElementById('caption-model').value   = d.caption_model || 'base.en';
+  document.getElementById('smart-broll').checked   = d.smart_broll !== false;
+  document.getElementById('chunk-seconds').value   = d.chunk_seconds || 10;
+  document.getElementById('pixabay-key').value     = d.pixabay_api_key || '';
   refreshCaptionInstallStatus();
 }
 
@@ -1723,6 +1753,9 @@ async function saveSettings() {
     thumbnail_variants: parseInt(document.getElementById('thumb-variants').value) || 1,
     burn_captions:      document.getElementById('burn-captions').checked,
     caption_model:      document.getElementById('caption-model').value,
+    smart_broll:        document.getElementById('smart-broll').checked,
+    chunk_seconds:      parseInt(document.getElementById('chunk-seconds').value) || 10,
+    pixabay_api_key:    document.getElementById('pixabay-key').value.trim(),
   };
   await fetch('/api/config', {
     method: 'POST', headers: {'Content-Type':'application/json'},

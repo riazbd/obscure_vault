@@ -50,6 +50,9 @@ def load_config():
         "thumbnail_variants": 1,
         "burn_captions": False,
         "caption_model": "base.en",
+        "smart_broll": True,
+        "pixabay_api_key": "",
+        "chunk_seconds": 10,
     }
 
 def save_config(data):
@@ -174,97 +177,193 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
                 log(f"⚠️  caption build failed, continuing without burn-in: {e}")
                 captions_ass = None
 
-        # ── Step 2: Footage ──────────────────────────────
-        progress(18, "Searching Pexels for footage...")
-        footage_dir = workspace / "footage"
-        footage_dir.mkdir(exist_ok=True)
-        footage_paths = []
+        # ── Step 2-4: Footage ────────────────────────────
+        footage_track    = None
+        footage_paths    = []
+        used_smart_broll = False
+        W, H = cfg.get("video_resolution", [1920, 1080])
 
-        pexels_key = cfg.get("pexels_api_key", "")
-        if pexels_key and len(pexels_key) > 10:
-            KEYWORD_MAP = {
-                "war": ["war ruins smoke", "battlefield aerial", "military ruins"],
-                "secret": ["dark corridor", "vault door steel", "shadow mystery"],
-                "death": ["graveyard fog", "dark cemetery night", "abandoned place"],
-                "disappear": ["fog forest", "dark lake mist", "abandoned building"],
-                "prison": ["dark prison", "stone dungeon", "iron bars gate"],
-                "ancient": ["ancient ruins", "stone temple", "archaeology excavation"],
-                "soviet": ["soviet era building", "cold war bunker", "brutalist architecture"],
-                "plague": ["medieval architecture", "dramatic storm clouds", "empty town"],
-                "nasa": ["space dark", "night sky stars", "rocket launch"],
-                "cia": ["government building", "dark hallway", "city at night"],
-                "nuclear": ["explosion cloud", "power plant", "dramatic storm"],
-                "experiment": ["dark laboratory", "science equipment", "microscope"],
-                "cult": ["dark forest night", "abandoned church", "candlelight"],
-                "ship": ["stormy ocean", "shipwreck", "dark stormy sea"],
-                "mountain": ["mountain fog", "blizzard snow", "dark alpine peak"],
-                "default": ["dramatic dark clouds", "abandoned historical building",
-                            "foggy landscape", "dark ruins"],
-            }
-            ATMOSPHERIC = [
-                "candle flame dark background", "old parchment texture",
-                "dramatic light rays", "dark water reflection",
-                "ancient stone texture", "dramatic thunderstorm",
-                "foggy forest path", "dark corridor light end",
-            ]
-            title_lower = title.lower()
-            keywords = []
-            for trigger, queries in KEYWORD_MAP.items():
-                if trigger in title_lower:
-                    keywords.extend(random.sample(queries, min(2, len(queries))))
-            if not keywords:
-                keywords = list(KEYWORD_MAP["default"])
-            keywords += random.sample(ATMOSPHERIC, 3)
+        if (cfg.get("smart_broll", True)
+            and cfg.get("openrouter_api_key", "")
+            and cfg.get("pexels_api_key", "")):
+            progress(18, "Smart B-roll: chunking script + querying LLM...")
+            try:
+                from engines import footage as footage_engine
+                br = footage_engine.build(
+                    script=script, duration=duration, workspace=workspace,
+                    openrouter_key=cfg["openrouter_api_key"],
+                    pexels_key=cfg["pexels_api_key"],
+                    pixabay_key=cfg.get("pixabay_api_key", ""),
+                    width=W, height=H,
+                    target_chunk_secs=float(cfg.get("chunk_seconds", 10.0)),
+                    on_log=log,
+                )
+                footage_track    = br["track"]
+                footage_paths    = sorted((workspace / "footage").glob("*.mp4"))
+                used_smart_broll = True
+                progress(65, f"Smart B-roll ready ({len(br['plan'])} chunks)")
+            except Exception as e:
+                log(f"⚠️  Smart B-roll failed, falling back to legacy: {e}")
+                footage_track = None
 
-            all_meta = []
-            for kw in keywords:
-                if len(all_meta) >= cfg.get("max_clips", 25):
-                    break
-                try:
-                    headers = {"Authorization": pexels_key}
-                    params  = {"query": kw, "per_page": 3,
-                               "orientation": "landscape", "size": "medium"}
-                    resp = req_lib.get("https://api.pexels.com/videos/search",
-                                       headers=headers, params=params, timeout=15)
-                    resp.raise_for_status()
-                    for v in resp.json().get("videos", []):
-                        files = sorted(
-                            [f for f in v.get("video_files", []) if f.get("width", 0) <= 1920],
-                            key=lambda x: x.get("width", 0), reverse=True
-                        )
-                        if files:
-                            all_meta.append({"id": v["id"], "url": files[0]["link"],
-                                             "duration": v.get("duration", 8), "q": kw})
-                except Exception as e:
-                    log(f"⚠️ Pexels '{kw}': {e}")
+        if not used_smart_broll:
+            # ── Legacy: substring keywords → bulk Pexels → uniform process ──
+            progress(18, "Searching Pexels for footage...")
+            footage_dir = workspace / "footage"
+            footage_dir.mkdir(exist_ok=True)
+            footage_paths = []
 
-            random.shuffle(all_meta)
-            total_secs, need = 0.0, duration * 1.5
-            downloaded = 0
-            for meta in all_meta:
-                if total_secs >= need:
-                    break
-                dest = footage_dir / f"clip_{meta['id']}.mp4"
-                try:
-                    r2 = req_lib.get(meta["url"], stream=True, timeout=60)
-                    r2.raise_for_status()
-                    with open(dest, "wb") as f:
-                        for chunk in r2.iter_content(1024 * 256):
-                            f.write(chunk)
-                    footage_paths.append(dest)
-                    total_secs += meta["duration"]
-                    downloaded += 1
-                    pct = 18 + int((downloaded / max(len(all_meta), 1)) * 22)
-                    progress(min(pct, 40), f"Downloaded clip {downloaded}: {meta['q']}")
-                except Exception as e:
-                    log(f"⚠️ Clip download fail: {e}")
+            pexels_key = cfg.get("pexels_api_key", "")
+            if pexels_key and len(pexels_key) > 10:
+                KEYWORD_MAP = {
+                    "war": ["war ruins smoke", "battlefield aerial", "military ruins"],
+                    "secret": ["dark corridor", "vault door steel", "shadow mystery"],
+                    "death": ["graveyard fog", "dark cemetery night", "abandoned place"],
+                    "disappear": ["fog forest", "dark lake mist", "abandoned building"],
+                    "prison": ["dark prison", "stone dungeon", "iron bars gate"],
+                    "ancient": ["ancient ruins", "stone temple", "archaeology excavation"],
+                    "soviet": ["soviet era building", "cold war bunker", "brutalist architecture"],
+                    "plague": ["medieval architecture", "dramatic storm clouds", "empty town"],
+                    "nasa": ["space dark", "night sky stars", "rocket launch"],
+                    "cia": ["government building", "dark hallway", "city at night"],
+                    "nuclear": ["explosion cloud", "power plant", "dramatic storm"],
+                    "experiment": ["dark laboratory", "science equipment", "microscope"],
+                    "cult": ["dark forest night", "abandoned church", "candlelight"],
+                    "ship": ["stormy ocean", "shipwreck", "dark stormy sea"],
+                    "mountain": ["mountain fog", "blizzard snow", "dark alpine peak"],
+                    "default": ["dramatic dark clouds", "abandoned historical building",
+                                "foggy landscape", "dark ruins"],
+                }
+                ATMOSPHERIC = [
+                    "candle flame dark background", "old parchment texture",
+                    "dramatic light rays", "dark water reflection",
+                    "ancient stone texture", "dramatic thunderstorm",
+                    "foggy forest path", "dark corridor light end",
+                ]
+                title_lower = title.lower()
+                keywords = []
+                for trigger, queries in KEYWORD_MAP.items():
+                    if trigger in title_lower:
+                        keywords.extend(random.sample(queries, min(2, len(queries))))
+                if not keywords:
+                    keywords = list(KEYWORD_MAP["default"])
+                keywords += random.sample(ATMOSPHERIC, 3)
 
-            log(f"✅ {len(footage_paths)} clips, ~{total_secs:.0f}s footage")
-        else:
-            log("⚠️ No Pexels key — using dark background")
+                all_meta = []
+                for kw in keywords:
+                    if len(all_meta) >= cfg.get("max_clips", 25):
+                        break
+                    try:
+                        headers = {"Authorization": pexels_key}
+                        params  = {"query": kw, "per_page": 3,
+                                   "orientation": "landscape", "size": "medium"}
+                        resp = req_lib.get("https://api.pexels.com/videos/search",
+                                           headers=headers, params=params, timeout=15)
+                        resp.raise_for_status()
+                        for v in resp.json().get("videos", []):
+                            files = sorted(
+                                [f for f in v.get("video_files", []) if f.get("width", 0) <= 1920],
+                                key=lambda x: x.get("width", 0), reverse=True
+                            )
+                            if files:
+                                all_meta.append({"id": v["id"], "url": files[0]["link"],
+                                                 "duration": v.get("duration", 8), "q": kw})
+                    except Exception as e:
+                        log(f"⚠️ Pexels '{kw}': {e}")
 
-        # ── Step 3: Music ────────────────────────────────
-        progress(42, "Selecting background music...")
+                random.shuffle(all_meta)
+                total_secs, need = 0.0, duration * 1.5
+                downloaded = 0
+                for meta in all_meta:
+                    if total_secs >= need:
+                        break
+                    dest = footage_dir / f"clip_{meta['id']}.mp4"
+                    try:
+                        r2 = req_lib.get(meta["url"], stream=True, timeout=60)
+                        r2.raise_for_status()
+                        with open(dest, "wb") as f:
+                            for chunk in r2.iter_content(1024 * 256):
+                                f.write(chunk)
+                        footage_paths.append(dest)
+                        total_secs += meta["duration"]
+                        downloaded += 1
+                        pct = 18 + int((downloaded / max(len(all_meta), 1)) * 22)
+                        progress(min(pct, 40), f"Downloaded clip {downloaded}: {meta['q']}")
+                    except Exception as e:
+                        log(f"⚠️ Clip download fail: {e}")
+
+                log(f"✅ {len(footage_paths)} clips, ~{total_secs:.0f}s footage")
+            else:
+                log("⚠️ No Pexels key — using dark background")
+
+            # ── Step 4 (legacy): Process footage ─────────
+            progress(45, "Processing and colour-grading footage clips...")
+            proc_dir = workspace / "processed"
+            proc_dir.mkdir(exist_ok=True)
+
+            COLOR_GRADE = (
+                "colorchannelmixer=rr=1.05:gg=0.95:bb=0.88,"
+                "curves=all='0/0 0.25/0.18 0.75/0.65 1/0.90',"
+                "eq=saturation=0.78:brightness=-0.04:contrast=1.10"
+            )
+
+            scaled = []
+            for i, cp in enumerate(footage_paths):
+                out = proc_dir / f"s{i:03d}.mp4"
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", str(cp),
+                    "-vf", (f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+                            f"crop={W}:{H},setsar=1,{COLOR_GRADE}"),
+                    "-an", "-c:v", "libx264", "-preset", "fast",
+                    "-crf", "23", "-r", "30", "-pix_fmt", "yuv420p", str(out)
+                ], capture_output=True)
+                if out.exists():
+                    scaled.append(out)
+                pct = 45 + int((i + 1) / max(len(footage_paths), 1) * 20)
+                progress(min(pct, 65), f"Processed clip {i+1}/{len(footage_paths)}")
+
+            if not scaled:
+                progress(65, "Generating dark background card...")
+                fallback = proc_dir / "fallback.mp4"
+                subprocess.run([
+                    "ffmpeg", "-y", "-f", "lavfi",
+                    "-i", f"color=c=0x0a0a0a:size={W}x{H}:rate=30:duration={duration}",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(fallback)
+                ], capture_output=True)
+                footage_track = fallback
+            else:
+                concat_txt = workspace / "concat.txt"
+                lines, current, idx = [], 0.0, 0
+                while current < duration + 5:
+                    p = scaled[idx % len(scaled)]
+                    lines.append(f"file '{p.resolve()}'")
+                    try:
+                        rd = subprocess.run(
+                            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                             "-of", "default=noprint_wrappers=1:nokey=1", str(p)],
+                            capture_output=True, text=True)
+                        current += float(rd.stdout.strip())
+                    except Exception:
+                        current += 8.0
+                    idx += 1
+                concat_txt.write_text("\n".join(lines))
+
+                progress(66, "Concatenating footage...")
+                raw = proc_dir / "concat_raw.mp4"
+                subprocess.run([
+                    "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                    "-i", str(concat_txt), "-c", "copy", str(raw)
+                ], capture_output=True)
+
+                trimmed = proc_dir / "footage_trimmed.mp4"
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", str(raw),
+                    "-t", str(duration), "-c", "copy", str(trimmed)
+                ], capture_output=True)
+                footage_track = trimmed
+
+        # ── Step 3: Music (independent of B-roll branch) ──
+        progress(67, "Selecting background music...")
         music_path = None
         tracks = list(MUSIC_DIR.glob("*.mp3")) + list(MUSIC_DIR.glob("*.wav"))
         if tracks:
@@ -272,75 +371,6 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
             log(f"✅ Music: {music_path.name}")
         else:
             log("ℹ️ No music files — voiceover only")
-
-        # ── Step 4: Process footage ──────────────────────
-        progress(45, "Processing and colour-grading footage clips...")
-        proc_dir = workspace / "processed"
-        proc_dir.mkdir(exist_ok=True)
-        W, H = cfg.get("video_resolution", [1920, 1080])
-
-        COLOR_GRADE = (
-            "colorchannelmixer=rr=1.05:gg=0.95:bb=0.88,"
-            "curves=all='0/0 0.25/0.18 0.75/0.65 1/0.90',"
-            "eq=saturation=0.78:brightness=-0.04:contrast=1.10"
-        )
-
-        scaled = []
-        for i, cp in enumerate(footage_paths):
-            out = proc_dir / f"s{i:03d}.mp4"
-            subprocess.run([
-                "ffmpeg", "-y", "-i", str(cp),
-                "-vf", (f"scale={W}:{H}:force_original_aspect_ratio=increase,"
-                        f"crop={W}:{H},setsar=1,{COLOR_GRADE}"),
-                "-an", "-c:v", "libx264", "-preset", "fast",
-                "-crf", "23", "-r", "30", "-pix_fmt", "yuv420p", str(out)
-            ], capture_output=True)
-            if out.exists():
-                scaled.append(out)
-            pct = 45 + int((i + 1) / max(len(footage_paths), 1) * 20)
-            progress(min(pct, 65), f"Processed clip {i+1}/{len(footage_paths)}")
-
-        # Build footage track
-        if not scaled:
-            progress(65, "Generating dark background card...")
-            fallback = proc_dir / "fallback.mp4"
-            subprocess.run([
-                "ffmpeg", "-y", "-f", "lavfi",
-                "-i", f"color=c=0x0a0a0a:size={W}x{H}:rate=30:duration={duration}",
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(fallback)
-            ], capture_output=True)
-            footage_track = fallback
-        else:
-            # Concat list
-            concat_txt = workspace / "concat.txt"
-            lines, current, idx = [], 0.0, 0
-            while current < duration + 5:
-                p = scaled[idx % len(scaled)]
-                lines.append(f"file '{p.resolve()}'")
-                try:
-                    rd = subprocess.run(
-                        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                         "-of", "default=noprint_wrappers=1:nokey=1", str(p)],
-                        capture_output=True, text=True)
-                    current += float(rd.stdout.strip())
-                except Exception:
-                    current += 8.0
-                idx += 1
-            concat_txt.write_text("\n".join(lines))
-
-            progress(66, "Concatenating footage...")
-            raw = proc_dir / "concat_raw.mp4"
-            subprocess.run([
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                "-i", str(concat_txt), "-c", "copy", str(raw)
-            ], capture_output=True)
-
-            trimmed = proc_dir / "footage_trimmed.mp4"
-            subprocess.run([
-                "ffmpeg", "-y", "-i", str(raw),
-                "-t", str(duration), "-c", "copy", str(trimmed)
-            ], capture_output=True)
-            footage_track = trimmed
 
         # ── Step 5: Final assembly ───────────────────────
         progress(70, "Assembling final video...")
