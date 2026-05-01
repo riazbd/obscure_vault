@@ -1060,6 +1060,23 @@ A 15-minute video needs ~2160 words."
           </div>
         </div>
 
+        <!-- Scheduler -->
+        <div class="card">
+          <div class="card-title">Scheduler — full autopilot</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+            Runs the loop without you. Off by default; flip what you want on.
+            Each task only fires when its interval has elapsed since its last
+            successful run. Auto-produce respects the "one render at a time"
+            rule and skips if a pipeline is already running.
+          </p>
+          <div id="sched-rows"></div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:8px">
+            Settings save applies to the running scheduler immediately on next tick (60 s).
+          </div>
+          <pre id="sched-log" style="display:none;max-height:160px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:10px;font-size:11px;color:var(--text-dim);margin-top:10px;white-space:pre-wrap"></pre>
+          <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="toggleSchedLog()">Show recent log</button>
+        </div>
+
         <!-- YouTube Upload -->
         <div class="card">
           <div class="card-title">YouTube Upload</div>
@@ -1748,6 +1765,96 @@ async function generateScriptWithAI() {
 }
 
 /* ════════════════════════════════════════════════════════
+   SCHEDULER
+════════════════════════════════════════════════════════ */
+const SCHED_TASK_LABELS = {
+  harvest_ideas:     "🌾 Harvest ideas",
+  produce_top_idea:  "🎬 Produce top idea",
+  refresh_analytics: "📊 Refresh analytics",
+};
+
+async function loadScheduler() {
+  const r = await fetch('/api/scheduler/state');
+  const d = await r.json();
+  window._schedState = d;
+  const rows = document.getElementById('sched-rows');
+  if (!rows) return;
+  rows.innerHTML = Object.keys(SCHED_TASK_LABELS).map(name => {
+    const t = (d.tasks || {})[name] || {};
+    const label = SCHED_TASK_LABELS[name];
+    const lastRun = t.last_run ? t.last_run.replace('T', ' ').slice(0, 16) : '—';
+    const nextRun = t.next_run ? t.next_run.replace('T', ' ').slice(0, 16) : '—';
+    const lastStatus = t.last_status || '';
+    const statusBadge = !lastStatus
+      ? ''
+      : (lastStatus.startsWith('ok') || lastStatus.startsWith('skip'))
+        ? `<span style="color:var(--gold);font-size:11px">${escapeHTML(lastStatus)}</span>`
+        : `<span style="color:#e6a23a;font-size:11px">${escapeHTML(lastStatus)}</span>`;
+    return `
+      <div style="display:flex;gap:10px;align-items:center;padding:10px 0;border-top:1px solid #222">
+        <div style="flex:0 0 200px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="sched-${name}-enabled"
+                   ${t.enabled ? 'checked' : ''}
+                   onchange="saveSchedulerInline()"
+                   style="width:18px;height:18px;accent-color:var(--gold)">
+            <span>${label}</span>
+          </label>
+        </div>
+        <div style="flex:0 0 130px;font-size:12px;color:var(--text-dim)">
+          every
+          <input type="number" id="sched-${name}-hours"
+                 min="1" max="168" step="1" value="${t.interval_hours}"
+                 onchange="saveSchedulerInline()"
+                 style="width:54px;background:#1a1a1a;color:var(--text);border:1px solid #333;border-radius:4px;padding:2px 6px;margin:0 4px">
+          h
+        </div>
+        <div style="flex:1;font-size:11px;color:var(--text-dim);line-height:1.5;min-width:0">
+          last: ${lastRun}<br>
+          next: ${nextRun}<br>
+          ${statusBadge}
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="triggerScheduler('${name}')" title="Run this task now">Run now</button>
+      </div>`;
+  }).join('');
+}
+
+async function saveSchedulerInline() {
+  // Read DOM, build scheduler config, save through the regular settings endpoint.
+  const cfg = (await (await fetch('/api/config')).json()) || {};
+  cfg.scheduler = cfg.scheduler || {};
+  for (const name of Object.keys(SCHED_TASK_LABELS)) {
+    const enabled = document.getElementById('sched-' + name + '-enabled')?.checked;
+    const hours   = parseFloat(document.getElementById('sched-' + name + '-hours')?.value || '6');
+    cfg.scheduler[name] = { enabled: !!enabled, interval_hours: hours };
+  }
+  await fetch('/api/config', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(cfg),
+  });
+  loadScheduler();
+}
+
+async function triggerScheduler(name) {
+  const r = await fetch('/api/scheduler/trigger/' + name, { method: 'POST' });
+  const d = await r.json();
+  if (!r.ok) { toast(d.error || 'failed', 'error'); return; }
+  toast('Triggered: ' + name, 'info');
+  setTimeout(loadScheduler, 1500);
+}
+
+function toggleSchedLog() {
+  const log = document.getElementById('sched-log');
+  if (log.style.display === 'none' || !log.style.display) {
+    log.style.display = 'block';
+    log.textContent = (window._schedState?.log || []).join('\n');
+    log.scrollTop = log.scrollHeight;
+  } else {
+    log.style.display = 'none';
+  }
+}
+
+/* ════════════════════════════════════════════════════════
    IDEAS
 ════════════════════════════════════════════════════════ */
 let harvestPoll = null;
@@ -2121,6 +2228,7 @@ async function loadSettings() {
   document.getElementById('use-research').checked  = !!d.use_research;
   refreshYTStatus();
   refreshCaptionInstallStatus();
+  loadScheduler();
 }
 
 async function refreshCaptionInstallStatus() {

@@ -1547,8 +1547,51 @@ def ideas_produce(idea_id):
     return jsonify({"job_id": job_id})
 
 
+# ════════════════════════════════════════════════════════
+#  Scheduler routes
+# ════════════════════════════════════════════════════════
+
+def _scheduler_produce_idea(idea: dict, minutes: float):
+    """Runtime callback the scheduler uses to start the produce flow."""
+    cfg = load_config()
+    job_id = "ip_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    script_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(
+        target=_run_idea_to_video,
+        args=(job_id, idea, minutes, cfg),
+        daemon=True,
+    ).start()
+
+
+def _scheduler_runtime():
+    return {
+        "pipeline_jobs": lambda: jobs,
+        "produce_idea":  _scheduler_produce_idea,
+    }
+
+
+@app.route("/api/scheduler/state", methods=["GET"])
+def scheduler_state():
+    from engines import scheduler as sched
+    cfg = load_config()
+    return jsonify(sched.get_state(cfg.get("scheduler", {})))
+
+
+@app.route("/api/scheduler/trigger/<task_name>", methods=["POST"])
+def scheduler_trigger(task_name):
+    from engines import scheduler as sched
+    res = sched.trigger_now(task_name, load_config, _scheduler_runtime())
+    if "error" in res:
+        return jsonify(res), 400
+    return jsonify(res)
+
+
 if __name__ == "__main__":
     import webbrowser
+    from engines import scheduler as sched
+    sched.start(load_config, _scheduler_runtime())
     print("\n" + "═"*55)
     print("  OBSCURA VAULT — Starting UI Server")
     print("  Opening http://localhost:5050 in your browser...")
