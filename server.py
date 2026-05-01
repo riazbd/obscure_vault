@@ -581,8 +581,18 @@ TIMESTAMPS
                         privacy_status=cfg.get("default_privacy", "private"),
                         contains_synthetic_media=cfg.get(
                             "contains_synthetic_media", True),
+                        idea_id=cfg.get("_idea_id"),
                         on_log=log,
                     )
+                    # If this came from an idea, mark it produced.
+                    if cfg.get("_idea_id"):
+                        try:
+                            from engines import ideas as _I
+                            _I.update_status(
+                                cfg["_idea_id"], "produced",
+                                video_id=upload_result.get("video_id"))
+                        except Exception:
+                            pass
                     log(f"   ✅ live at {upload_result['url']}")
                 else:
                     log("⚠️  auto-upload on but YouTube not authorized; skipping")
@@ -1388,9 +1398,13 @@ def _run_idea_to_video(job_id: str, idea: dict, minutes: float, cfg: dict):
             "status": "running", "progress": 0, "stage": "Starting...",
             "log": [], "result": None, "error": None, "duration": None,
         }
+        # Carry the idea_id transiently so auto-upload can record it
+        # for analytics token-signal correlation.
+        pipeline_cfg = dict(cfg)
+        pipeline_cfg["_idea_id"] = idea["id"]
         t = threading.Thread(
             target=run_pipeline_thread,
-            args=(pipeline_id, seo["title"], sc["script"], cfg),
+            args=(pipeline_id, seo["title"], sc["script"], pipeline_cfg),
             daemon=True,
         )
         t.start()
@@ -1414,6 +1428,72 @@ def _run_idea_to_video(job_id: str, idea: dict, minutes: float, cfg: dict):
         job["error"]  = str(e)
         job["log"].append(f"❌ {e}")
         job["log"].append(traceback.format_exc()[-1500:])
+
+
+# ════════════════════════════════════════════════════════
+#  Analytics routes
+# ════════════════════════════════════════════════════════
+
+analytics_jobs = {}
+
+
+def _run_analytics_refresh(job_id: str):
+    from engines import analytics
+    job = analytics_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[analytics {job_id}] {msg}")
+
+    try:
+        result = analytics.refresh_metrics(on_log=log)
+        job["result"] = result
+        job["status"] = "done"
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/analytics/refresh", methods=["POST"])
+def analytics_refresh():
+    job_id = "an_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    analytics_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(target=_run_analytics_refresh, args=(job_id,),
+                     daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/analytics/refresh-status/<job_id>")
+def analytics_refresh_status(job_id):
+    job = analytics_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-30:],
+        "result": job["result"],
+        "error":  job["error"],
+    })
+
+
+@app.route("/api/analytics/list", methods=["GET"])
+def analytics_list():
+    from engines import analytics
+    return jsonify({
+        "uploads": analytics.list_uploads(),
+        "metrics": analytics.list_metrics(),
+    })
+
+
+@app.route("/api/analytics/signals", methods=["GET"])
+def analytics_signals():
+    from engines import analytics
+    return jsonify(analytics.compute_token_signals())
 
 
 @app.route("/api/ideas/<idea_id>/produce", methods=["POST"])

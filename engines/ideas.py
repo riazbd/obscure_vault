@@ -408,8 +408,28 @@ def run_harvest(
                  if it["niche_fit"] is None or it["niche_fit"] >= 0.35]
         log(f"   {len(fresh)} survived niche-fit cull")
 
-    # Sort by niche_fit desc and cap at keep_top
-    fresh.sort(key=lambda it: (it.get("niche_fit") or 0), reverse=True)
+    # Apply analytics-derived performance signals (zero-effect if no
+    # uploads have been tracked yet).
+    try:
+        from engines import analytics as _an
+        signals = _an.compute_token_signals()
+        if signals.get("tokens"):
+            log(f"📊 applying signals from {len(signals['tokens'])} tokens...")
+            for it in fresh:
+                mult = _an.predict_score_for_idea(
+                    it["title"], [], signals=signals)
+                it["perf_multiplier"] = mult
+                if it.get("niche_fit") is not None:
+                    it["ranked_score"] = round(it["niche_fit"] * mult, 3)
+                else:
+                    it["ranked_score"] = mult
+    except Exception as e:
+        log(f"   ⚠️  signal apply skipped: {e}")
+
+    # Sort by ranked_score (or niche_fit if no signals) desc; cap at keep_top
+    def _rank(it):
+        return it.get("ranked_score") or it.get("niche_fit") or 0
+    fresh.sort(key=_rank, reverse=True)
     fresh = fresh[:keep_top]
 
     with _LOCK:

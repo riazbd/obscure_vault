@@ -918,11 +918,17 @@ A 15-minute video needs ~2160 words."
         <p>All generated videos ready for YouTube upload.</p>
       </div>
       <div style="padding:32px 36px">
-        <div style="display:flex;justify-content:flex-end;margin-bottom:16px">
-          <button class="btn btn-ghost btn-sm" onclick="loadOutputs()">
-            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-            Refresh
-          </button>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:10px;flex-wrap:wrap">
+          <div id="analytics-summary" style="font-size:12px;color:var(--text-dim)"></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-ghost btn-sm" onclick="refreshAnalytics()" title="Pull fresh CTR / views / AVD from YouTube">
+              📊 Refresh Analytics
+            </button>
+            <button class="btn btn-ghost btn-sm" onclick="loadOutputs()">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+              Refresh
+            </button>
+          </div>
         </div>
         <div class="output-grid" id="output-grid">
           <div class="empty-state" style="grid-column:1/-1">
@@ -1496,8 +1502,32 @@ function resetGenBtn() {
 async function loadOutputs() {
   const grid = document.getElementById('output-grid');
   grid.innerHTML = '<div style="color:var(--text-dim);font-size:13px;padding:20px">Loading...</div>';
-  const r = await fetch('/api/outputs');
-  const d = await r.json();
+
+  // Pull video list + analytics in parallel
+  const [vidsRes, anRes] = await Promise.all([
+    fetch('/api/outputs'),
+    fetch('/api/analytics/list'),
+  ]);
+  const d  = await vidsRes.json();
+  const an = await anRes.json();
+  const metricsByVid = (an?.metrics?.by_video) || {};
+  const uploads = an?.uploads || [];
+  // Best-effort match: by exact title
+  const titleToVid = {};
+  for (const u of uploads) {
+    titleToVid[(u.title || '').toLowerCase()] = u.video_id;
+  }
+
+  // Channel summary
+  const summary = document.getElementById('analytics-summary');
+  if (an?.metrics?.refreshed_at && Object.keys(metricsByVid).length) {
+    const totViews = Object.values(metricsByVid).reduce((s, m) => s + (m.views || 0), 0);
+    const ctrs    = Object.values(metricsByVid).map(m => m.ctr || 0).filter(x => x > 0);
+    const avgCTR  = ctrs.length ? (ctrs.reduce((a,b) => a+b, 0) / ctrs.length).toFixed(1) : '—';
+    summary.textContent = `${Object.keys(metricsByVid).length} tracked videos · ${totViews.toLocaleString()} total views · avg CTR ${avgCTR}% · refreshed ${an.metrics.refreshed_at.slice(0,16)}`;
+  } else {
+    summary.textContent = '';
+  }
 
   if (!d.length) {
     grid.innerHTML = `
@@ -1508,14 +1538,27 @@ async function loadOutputs() {
     return;
   }
 
-  grid.innerHTML = d.map(v => `
+  grid.innerHTML = d.map(v => {
+    const vidName = v.name.replace('.mp4','').slice(16);
+    const vid     = titleToVid[vidName.toLowerCase()];
+    const m       = vid ? metricsByVid[vid] : null;
+    let perf = '';
+    if (m) {
+      const ctr = (m.ctr || 0).toFixed(1);
+      const avp = (m.avg_view_percent || 0).toFixed(0);
+      perf = `<div class="output-meta" style="color:var(--gold);margin-top:4px">
+        ${(m.views||0).toLocaleString()} views · CTR ${ctr}% · AVD ${avp}%
+      </div>`;
+    }
+    return `
     <div class="output-card">
       ${v.thumbnail
         ? `<img class="output-thumb" src="/api/outputs/thumbnail/${v.thumbnail}" alt="thumbnail" loading="lazy">`
         : `<div class="output-thumb-placeholder">🎬</div>`}
       <div class="output-info">
-        <div class="output-name">${v.name.replace('.mp4','').slice(16)}</div>
+        <div class="output-name">${vidName}</div>
         <div class="output-meta">${v.size_mb} MB &nbsp;·&nbsp; ${v.created}</div>
+        ${perf}
         <div class="output-actions">
           <a href="/api/outputs/download/${v.name}" class="btn btn-primary btn-sm" download>
             ↓ Download
@@ -1526,7 +1569,29 @@ async function loadOutputs() {
         </div>
       </div>
     </div>
-  `).join('');
+  `;
+  }).join('');
+}
+
+async function refreshAnalytics() {
+  toast('Pulling YouTube analytics...', 'info');
+  const r = await fetch('/api/analytics/refresh', { method: 'POST' });
+  const d = await r.json();
+  if (!r.ok) { toast(d.error || 'Failed.', 'error'); return; }
+
+  const poll = setInterval(async () => {
+    const sr = await fetch('/api/analytics/refresh-status/' + d.job_id);
+    const sd = await sr.json();
+    if (sd.status === 'done') {
+      clearInterval(poll);
+      const r2 = sd.result || {};
+      toast(`Analytics refreshed: ${r2.refreshed||0}/${r2.total||0}`, 'ok');
+      loadOutputs();
+    } else if (sd.status === 'error') {
+      clearInterval(poll);
+      toast('Analytics failed: ' + (sd.error || ''), 'error');
+    }
+  }, 2000);
 }
 
 async function deleteOutput(name) {
@@ -1737,6 +1802,13 @@ async function loadIdeas() {
       ? (it.niche_fit >= 0.7 ? 'var(--gold)' : (it.niche_fit >= 0.5 ? 'var(--text)' : 'var(--text-dim)'))
       : 'var(--text-dim)';
     const sourceTag = it.source.replace('_', ' ');
+    let perfBadge = '';
+    if (it.perf_multiplier && Math.abs(it.perf_multiplier - 1.0) > 0.05) {
+      const pct = Math.round((it.perf_multiplier - 1.0) * 100);
+      const color = pct > 0 ? 'var(--gold)' : '#888';
+      const sign  = pct > 0 ? '+' : '';
+      perfBadge = `<span style="margin-left:10px;color:${color}" title="Predicted multiplier vs channel average, from past video performance">perf signal: ${sign}${pct}%</span>`;
+    }
     const isPending = it.status === 'pending';
     return `
       <div class="card" style="margin-bottom:10px">
@@ -1746,6 +1818,7 @@ async function loadIdeas() {
             <div style="font-size:11px;color:var(--text-dim);margin-top:6px">
               <span class="badge" style="background:#222;color:var(--text-dim)">${sourceTag}</span>
               <span style="margin-left:10px">niche fit: <strong style="color:${fitColor}">${fit}</strong></span>
+              ${perfBadge}
               ${it.rationale ? `<span style="margin-left:10px;color:var(--text-muted)">${escapeHTML(it.rationale)}</span>` : ''}
               ${it.source_url ? `<a href="${it.source_url}" target="_blank" style="margin-left:10px;color:var(--gold)">source ↗</a>` : ''}
             </div>
