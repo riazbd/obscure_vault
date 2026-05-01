@@ -989,6 +989,63 @@ A 15-minute video needs ~2160 words."
           </div>
         </div>
 
+        <!-- YouTube Upload -->
+        <div class="card">
+          <div class="card-title">YouTube Upload</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">
+            Free via YouTube Data API v3. ~6 uploads per day per project.
+            One-time setup — see steps below if anything is missing.
+          </p>
+          <div id="yt-status-box" style="font-size:13px;line-height:1.7;margin-bottom:14px">
+            <div>Loading status...</div>
+          </div>
+
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+            <button class="btn btn-ghost btn-sm" id="yt-install-btn"   onclick="ytInstall()">1. Install libs</button>
+            <button class="btn btn-ghost btn-sm" id="yt-secrets-btn"   onclick="document.getElementById('yt-secrets-file').click()">2. Upload client_secrets.json</button>
+            <input  type="file" accept="application/json" id="yt-secrets-file" style="display:none" onchange="ytUploadSecrets(this.files[0])">
+            <button class="btn btn-ghost btn-sm" id="yt-auth-btn"      onclick="ytAuthorize()">3. Authorize</button>
+            <button class="btn btn-danger btn-sm" id="yt-revoke-btn"   onclick="ytRevoke()" style="display:none">Revoke token</button>
+          </div>
+
+          <details style="font-size:12px;color:var(--text-dim);margin-bottom:10px">
+            <summary style="cursor:pointer">How to get client_secrets.json (one-time setup)</summary>
+            <ol style="margin-top:8px;padding-left:18px;line-height:1.7">
+              <li>Visit <a href="https://console.cloud.google.com/" target="_blank" style="color:var(--gold)">console.cloud.google.com</a> → create or pick a project.</li>
+              <li>APIs &amp; Services → enable <strong>YouTube Data API v3</strong>.</li>
+              <li>OAuth consent screen → External; add yourself as a Test user.</li>
+              <li>Credentials → Create OAuth client ID → application type <strong>Desktop app</strong>.</li>
+              <li>Download the JSON, then click "2. Upload client_secrets.json" above.</li>
+              <li>Click "3. Authorize" — a browser tab will open; approve access.</li>
+            </ol>
+          </details>
+
+          <div class="form-group" style="margin-top:6px">
+            <label class="form-label" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+              <input type="checkbox" id="auto-upload" style="width:18px;height:18px;accent-color:var(--gold)">
+              <span>Auto-upload every generated video</span>
+            </label>
+          </div>
+          <div class="row">
+            <div class="form-group">
+              <label class="form-label">Default privacy</label>
+              <select class="form-select" id="default-privacy">
+                <option value="private">Private (default — you review first)</option>
+                <option value="unlisted">Unlisted</option>
+                <option value="public">Public</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Disclose AI / synthetic media</label>
+              <select class="form-select" id="contains-synth">
+                <option value="true" selected>Yes (recommended — required by policy)</option>
+                <option value="false">No</option>
+              </select>
+            </div>
+          </div>
+          <pre id="yt-log" style="display:none;max-height:160px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:10px;font-size:11px;color:var(--text-dim);margin-top:8px;white-space:pre-wrap"></pre>
+        </div>
+
         <!-- Smart B-roll -->
         <div class="card">
           <div class="card-title">Smart B-roll (semantic per-chunk footage)</div>
@@ -1404,6 +1461,7 @@ async function loadOutputs() {
             ↓ Download
           </a>
           ${v.thumbnail ? `<a href="/api/outputs/thumbnail/${v.thumbnail}" class="btn btn-ghost btn-sm" download>🖼️</a>` : ''}
+          <button class="btn btn-gold btn-sm" onclick="ytUploadVideo('${v.name}')" title="Upload to YouTube">▶ YT</button>
           <button class="btn btn-danger btn-sm" onclick="deleteOutput('${v.name}')">🗑️</button>
         </div>
       </div>
@@ -1551,6 +1609,139 @@ async function generateScriptWithAI() {
 }
 
 /* ════════════════════════════════════════════════════════
+   YOUTUBE UPLOAD
+════════════════════════════════════════════════════════ */
+async function refreshYTStatus() {
+  const box = document.getElementById('yt-status-box');
+  if (!box) return;
+  let d = {};
+  try {
+    const r = await fetch('/api/youtube/status');
+    d = await r.json();
+  } catch (e) { box.innerHTML = '<span style="color:var(--text-dim)">Status unavailable.</span>'; return; }
+
+  const row = (label, ok) =>
+    `<div>${ok ? '<span class="badge badge-ok">✓</span>' : '<span class="badge badge-error">✗</span>'} ${label}</div>`;
+  let html = '';
+  html += row('YouTube libs installed', d.installed);
+  html += row('client_secrets.json uploaded', d.has_secrets);
+  html += row('Authorized', d.has_token);
+  if (d.channel) {
+    html += `<div style="margin-top:6px;color:var(--gold)">Channel: <strong>${d.channel.title}</strong> · ${d.channel.subscribers.toLocaleString()} subs</div>`;
+  }
+  box.innerHTML = html;
+  document.getElementById('yt-revoke-btn').style.display = d.has_token ? 'inline-flex' : 'none';
+}
+
+async function ytInstall() {
+  const btn = document.getElementById('yt-install-btn');
+  const log = document.getElementById('yt-log');
+  btn.disabled = true; btn.textContent = 'Installing...';
+  log.style.display = 'block'; log.textContent = '';
+  const r = await fetch('/api/youtube/install', { method: 'POST' });
+  const d = await r.json();
+  const poll = setInterval(async () => {
+    const sr = await fetch('/api/youtube/install-status/' + d.job_id);
+    const sd = await sr.json();
+    log.textContent = (sd.log || []).join('\n');
+    log.scrollTop = log.scrollHeight;
+    if (sd.status === 'done') {
+      clearInterval(poll);
+      btn.disabled = false; btn.textContent = '1. Install libs';
+      toast('YouTube libs installed.', 'ok');
+      refreshYTStatus();
+    } else if (sd.status === 'error') {
+      clearInterval(poll);
+      btn.disabled = false; btn.textContent = '1. Install libs';
+      toast('Install failed.', 'error');
+    }
+  }, 1200);
+}
+
+async function ytUploadSecrets(file) {
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  const r = await fetch('/api/youtube/upload-secrets', { method: 'POST', body: fd });
+  const d = await r.json();
+  if (r.ok) {
+    toast('client_secrets.json saved. Now click Authorize.', 'ok');
+    refreshYTStatus();
+  } else {
+    toast(d.error || 'Upload failed.', 'error');
+  }
+}
+
+async function ytAuthorize() {
+  const btn = document.getElementById('yt-auth-btn');
+  const log = document.getElementById('yt-log');
+  btn.disabled = true; btn.textContent = 'Waiting for browser...';
+  log.style.display = 'block';
+  log.textContent = 'A browser tab is opening. Approve access there.\n';
+
+  const r = await fetch('/api/youtube/authorize', { method: 'POST' });
+  const d = await r.json();
+  if (!r.ok) {
+    btn.disabled = false; btn.textContent = '3. Authorize';
+    toast(d.error || 'Authorize failed.', 'error'); return;
+  }
+  const poll = setInterval(async () => {
+    const sr = await fetch('/api/youtube/auth-status/' + d.job_id);
+    const sd = await sr.json();
+    if (sd.log && sd.log.length) {
+      log.textContent = sd.log.join('\n'); log.scrollTop = log.scrollHeight;
+    }
+    if (sd.status === 'done') {
+      clearInterval(poll);
+      btn.disabled = false; btn.textContent = '3. Authorize';
+      toast('Authorized! 🎉', 'ok');
+      refreshYTStatus();
+    } else if (sd.status === 'error') {
+      clearInterval(poll);
+      btn.disabled = false; btn.textContent = '3. Authorize';
+      toast('Auth failed: ' + (sd.error || ''), 'error');
+    }
+  }, 1500);
+}
+
+async function ytRevoke() {
+  if (!confirm('Revoke the saved YouTube token? You will need to re-authorize.')) return;
+  await fetch('/api/youtube/revoke', { method: 'POST' });
+  toast('Token revoked.', 'info');
+  refreshYTStatus();
+}
+
+async function ytUploadVideo(filename) {
+  if (!confirm('Upload "' + filename + '" to YouTube as ' +
+               document.getElementById('default-privacy')?.value || 'private' + '?')) return;
+  const opts = {
+    video: filename,
+    privacy_status: document.getElementById('default-privacy')?.value || 'private',
+    contains_synthetic_media: (document.getElementById('contains-synth')?.value || 'true') === 'true',
+  };
+  const r = await fetch('/api/youtube/upload-video', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(opts),
+  });
+  const d = await r.json();
+  if (!r.ok) { toast(d.error || 'Failed to start.', 'error'); return; }
+
+  toast('Uploading to YouTube...', 'info');
+  const poll = setInterval(async () => {
+    const sr = await fetch('/api/youtube/upload-status/' + d.job_id);
+    const sd = await sr.json();
+    if (sd.status === 'done') {
+      clearInterval(poll);
+      toast('Uploaded! ' + sd.result.url, 'ok');
+      window.open(sd.result.studio, '_blank');
+    } else if (sd.status === 'error') {
+      clearInterval(poll);
+      toast('Upload failed: ' + (sd.error || ''), 'error');
+    }
+  }, 2000);
+}
+
+/* ════════════════════════════════════════════════════════
    THUMBNAIL PREVIEW
 ════════════════════════════════════════════════════════ */
 let thumbPoll = null;
@@ -1646,6 +1837,10 @@ async function loadSettings() {
   document.getElementById('smart-broll').checked   = d.smart_broll !== false;
   document.getElementById('chunk-seconds').value   = d.chunk_seconds || 10;
   document.getElementById('pixabay-key').value     = d.pixabay_api_key || '';
+  document.getElementById('auto-upload').checked   = !!d.auto_upload;
+  document.getElementById('default-privacy').value = d.default_privacy || 'private';
+  document.getElementById('contains-synth').value  = (d.contains_synthetic_media === false) ? 'false' : 'true';
+  refreshYTStatus();
   refreshCaptionInstallStatus();
 }
 
@@ -1756,6 +1951,9 @@ async function saveSettings() {
     smart_broll:        document.getElementById('smart-broll').checked,
     chunk_seconds:      parseInt(document.getElementById('chunk-seconds').value) || 10,
     pixabay_api_key:    document.getElementById('pixabay-key').value.trim(),
+    auto_upload:        document.getElementById('auto-upload').checked,
+    default_privacy:    document.getElementById('default-privacy').value,
+    contains_synthetic_media: document.getElementById('contains-synth').value === 'true',
   };
   await fetch('/api/config', {
     method: 'POST', headers: {'Content-Type':'application/json'},

@@ -53,6 +53,9 @@ def load_config():
         "smart_broll": True,
         "pixabay_api_key": "",
         "chunk_seconds": 10,
+        "auto_upload": False,
+        "default_privacy": "private",
+        "contains_synthetic_media": True,
     }
 
 def save_config(data):
@@ -550,12 +553,41 @@ TIMESTAMPS
         (workspace / "description.txt").write_text(description)
 
         # ── Cleanup raw footage ───────────────────────────
-        for f in footage_dir.iterdir():
+        raw_dir = workspace / "footage"
+        if raw_dir.exists():
+            for f in raw_dir.iterdir():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+            log("🗑️ Raw footage cleaned up")
+
+        # ── Auto-upload to YouTube (if enabled) ──────────
+        upload_result = None
+        if cfg.get("auto_upload"):
             try:
-                f.unlink()
-            except Exception:
-                pass
-        log("🗑️ Raw footage cleaned up")
+                from engines import upload as up
+                if up.is_installed() and up.has_token():
+                    progress(98, "Uploading to YouTube...")
+                    log("📤 Auto-upload starting...")
+                    srt_sibling = OUTPUT_DIR / f"{job_name}.srt"
+                    upload_result = up.publish(
+                        final_mp4,
+                        title=title,
+                        description=description,
+                        tags=meta["tags"],
+                        thumbnail_path=(thumb if thumb.exists() else None),
+                        caption_srt_path=(srt_sibling if srt_sibling.exists() else None),
+                        privacy_status=cfg.get("default_privacy", "private"),
+                        contains_synthetic_media=cfg.get(
+                            "contains_synthetic_media", True),
+                        on_log=log,
+                    )
+                    log(f"   ✅ live at {upload_result['url']}")
+                else:
+                    log("⚠️  auto-upload on but YouTube not authorized; skipping")
+            except Exception as e:
+                log(f"⚠️  auto-upload failed (video still saved locally): {e}")
 
         # ── Done ─────────────────────────────────────────
         job["result"] = {
@@ -566,6 +598,7 @@ TIMESTAMPS
             "duration":    f"{m}:{s:02d}",
             "size_mb":     round(mb, 1),
             "job_name":    job_name,
+            "youtube":     upload_result,
         }
         progress(100, "Complete! 🎬")
         job["status"] = "done"
@@ -987,6 +1020,243 @@ def captions_install_status(job_id):
         "status": job["status"],
         "log":    job["log"][-50:],
         "error":  job["error"],
+    })
+
+
+# ════════════════════════════════════════════════════════
+#  YouTube upload routes
+# ════════════════════════════════════════════════════════
+
+@app.route("/api/youtube/status", methods=["GET"])
+def yt_status():
+    from engines import upload as up
+    info = up.channel_info() if (up.is_installed() and up.has_token()) else None
+    return jsonify({
+        "installed":   up.is_installed(),
+        "has_secrets": up.has_secrets(),
+        "has_token":   up.has_token(),
+        "channel":     info,
+    })
+
+
+def _run_install_youtube(job_id: str):
+    job = install_jobs[job_id]
+    cmd = [sys.executable, "-m", "pip", "install", "--break-system-packages",
+           "google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
+    job["log"].append("$ " + " ".join(cmd))
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        for line in iter(proc.stdout.readline, ""):
+            line = line.rstrip()
+            if line:
+                job["log"].append(line)
+                if len(job["log"]) > 400:
+                    job["log"] = job["log"][-300:]
+        proc.wait()
+        job["status"] = "done" if proc.returncode == 0 else "error"
+        if proc.returncode != 0:
+            job["error"] = f"pip exited {proc.returncode}"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"]  = str(e)
+
+
+@app.route("/api/youtube/install", methods=["POST"])
+def yt_install():
+    job_id = "yi_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    install_jobs[job_id] = {"status": "running", "log": [], "error": None}
+    threading.Thread(target=_run_install_youtube, args=(job_id,),
+                     daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/youtube/install-status/<job_id>")
+def yt_install_status(job_id):
+    job = install_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-50:],
+        "error":  job["error"],
+    })
+
+
+@app.route("/api/youtube/upload-secrets", methods=["POST"])
+def yt_upload_secrets():
+    if "file" not in request.files:
+        return jsonify({"error": "No file"}), 400
+    f = request.files["file"]
+    raw = f.read()
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return jsonify({"error": "Not valid JSON."}), 400
+    if not (parsed.get("installed") or parsed.get("web")):
+        return jsonify({"error": "Doesn't look like an OAuth client_secrets file."}), 400
+
+    from engines import upload as up
+    up.SECRETS_DIR.mkdir(parents=True, exist_ok=True)
+    up.CLIENT_SECRETS_PATH.write_bytes(raw)
+    # Wipe any old token — wrong client.
+    if up.TOKEN_PATH.exists():
+        up.TOKEN_PATH.unlink()
+    return jsonify({"ok": True})
+
+
+# Authorization is async because run_local_server() blocks on the
+# user clicking through the consent screen.
+auth_jobs = {}
+
+
+def _run_authorize(job_id: str):
+    from engines import upload as up
+    job = auth_jobs[job_id]
+    try:
+        up.authorize(open_browser=True)
+        job["status"] = "done"
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/youtube/authorize", methods=["POST"])
+def yt_authorize():
+    from engines import upload as up
+    if not up.is_installed():
+        return jsonify({"error": "Install YouTube libs first."}), 400
+    if not up.has_secrets():
+        return jsonify({"error": "Upload client_secrets.json first."}), 400
+
+    job_id = "ya_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    auth_jobs[job_id] = {"status": "running", "log": [], "error": None}
+    threading.Thread(target=_run_authorize, args=(job_id,), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/youtube/auth-status/<job_id>")
+def yt_auth_status(job_id):
+    job = auth_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-30:],
+        "error":  job["error"],
+    })
+
+
+@app.route("/api/youtube/revoke", methods=["POST"])
+def yt_revoke():
+    from engines import upload as up
+    up.revoke_token()
+    return jsonify({"ok": True})
+
+
+# Upload jobs (real video → YouTube)
+yt_upload_jobs = {}
+
+
+def _run_yt_upload(job_id: str, video_filename: str, options: dict):
+    from engines import upload as up
+    job = yt_upload_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[yt-up {job_id}] {msg}")
+
+    def progress(pct):
+        job["progress"] = pct
+
+    try:
+        video_path = OUTPUT_DIR / video_filename
+        if not video_path.exists():
+            raise FileNotFoundError(f"video not found: {video_filename}")
+
+        # Look for sibling assets
+        stem  = video_path.stem
+        thumb = OUTPUT_DIR / f"{stem}_thumbnail.jpg"
+        srt   = OUTPUT_DIR / f"{stem}.srt"
+
+        # Pull metadata from workspace if it exists (best source for title/desc/tags)
+        workspace_meta = WORKSPACE / stem / "metadata.json"
+        if workspace_meta.exists():
+            meta = json.loads(workspace_meta.read_text())
+        else:
+            meta = {
+                "title": options.get("title") or stem,
+                "description": options.get("description") or "",
+                "tags": options.get("tags") or [],
+            }
+
+        title       = options.get("title")       or meta.get("title")       or stem
+        description = options.get("description") or meta.get("description") or ""
+        tags        = options.get("tags")        or meta.get("tags")        or []
+
+        result = up.publish(
+            video_path,
+            title=title, description=description, tags=tags,
+            thumbnail_path=(thumb if thumb.exists() else None),
+            caption_srt_path=(srt if srt.exists() else None),
+            privacy_status=options.get("privacy_status", "private"),
+            publish_at=options.get("publish_at") or None,
+            contains_synthetic_media=options.get("contains_synthetic_media", True),
+            on_progress=progress, on_log=log,
+        )
+        job["result"] = result
+        job["status"] = "done"
+
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/youtube/upload-video", methods=["POST"])
+def yt_upload_video():
+    data = request.json or {}
+    video_filename = data.get("video", "")
+    if not video_filename:
+        return jsonify({"error": "video filename required"}), 400
+
+    from engines import upload as up
+    if not (up.is_installed() and up.has_token()):
+        return jsonify({"error": "YouTube not authorized."}), 400
+
+    options = {
+        "title":          data.get("title"),
+        "description":    data.get("description"),
+        "tags":           data.get("tags"),
+        "privacy_status": data.get("privacy_status", "private"),
+        "publish_at":     data.get("publish_at"),
+        "contains_synthetic_media": data.get("contains_synthetic_media", True),
+    }
+
+    job_id = "yu_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    yt_upload_jobs[job_id] = {
+        "status": "running", "progress": 0, "log": [], "result": None, "error": None,
+    }
+    threading.Thread(target=_run_yt_upload,
+                     args=(job_id, video_filename, options), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/youtube/upload-status/<job_id>")
+def yt_upload_status(job_id):
+    job = yt_upload_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status":   job["status"],
+        "progress": job.get("progress", 0),
+        "log":      job["log"][-30:],
+        "result":   job["result"],
+        "error":    job["error"],
     })
 
 
