@@ -1006,6 +1006,38 @@ A 15-minute video needs ~2160 words."
           </div>
         </div>
 
+        <!-- Captions -->
+        <div class="card">
+          <div class="card-title">Burn-in Captions</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+            Transcribes the voiceover with <strong>faster-whisper</strong> (local, CPU, free) and
+            burns styled subtitles into the final video. A separate <code>.srt</code> is also saved
+            for upload as a YouTube caption track. Adds ~3 minutes to render time.
+          </p>
+          <div class="form-group">
+            <label class="form-label" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+              <input type="checkbox" id="burn-captions" style="width:18px;height:18px;accent-color:var(--gold)">
+              <span>Generate &amp; burn-in captions on every video</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Whisper model</label>
+            <select class="form-select" id="caption-model" style="max-width:240px">
+              <option value="tiny.en">tiny.en — fastest, lowest quality (~75 MB)</option>
+              <option value="base.en" selected>base.en — recommended (~140 MB)</option>
+              <option value="small.en">small.en — better, slower (~460 MB)</option>
+            </select>
+            <div class="form-hint">Model downloads on first use. TTS audio is clean — base.en is plenty.</div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-ghost" id="cap-install-btn" onclick="installCaptions()">
+              Install caption deps
+            </button>
+            <span id="cap-install-status" style="font-size:12px;color:var(--text-dim)">Checking...</span>
+          </div>
+          <pre id="cap-install-log" style="display:none;max-height:160px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:10px;font-size:11px;color:var(--text-dim);margin-top:10px;white-space:pre-wrap"></pre>
+        </div>
+
         <!-- Video Quality -->
         <div class="card">
           <div class="card-title">Video Output</div>
@@ -1582,6 +1614,59 @@ async function loadSettings() {
   }
   document.getElementById('use-ai-thumb').checked = d.use_ai_thumbnail !== false;
   document.getElementById('thumb-variants').value = d.thumbnail_variants || 1;
+  document.getElementById('burn-captions').checked = !!d.burn_captions;
+  document.getElementById('caption-model').value   = d.caption_model || 'base.en';
+  refreshCaptionInstallStatus();
+}
+
+async function refreshCaptionInstallStatus() {
+  const el = document.getElementById('cap-install-status');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/captions/status');
+    const d = await r.json();
+    if (d.available) {
+      el.innerHTML = '<span class="badge badge-ok">✓ Installed</span>';
+      document.getElementById('cap-install-btn').textContent = 'Reinstall';
+    } else {
+      el.innerHTML = '<span class="badge badge-error">Not installed</span>';
+    }
+  } catch (e) {
+    el.textContent = '';
+  }
+}
+
+async function installCaptions() {
+  const btn  = document.getElementById('cap-install-btn');
+  const stat = document.getElementById('cap-install-status');
+  const log  = document.getElementById('cap-install-log');
+  btn.disabled = true; btn.textContent = 'Installing...';
+  stat.textContent = 'pip install faster-whisper running...';
+  log.style.display = 'block';
+  log.textContent = '';
+
+  const r = await fetch('/api/captions/install', { method: 'POST' });
+  const d = await r.json();
+  const jobId = d.job_id;
+
+  const poll = setInterval(async () => {
+    const sr = await fetch('/api/captions/install-status/' + jobId);
+    const sd = await sr.json();
+    log.textContent = (sd.log || []).join('\n');
+    log.scrollTop   = log.scrollHeight;
+    if (sd.status === 'done') {
+      clearInterval(poll);
+      btn.disabled = false; btn.textContent = 'Reinstall';
+      stat.innerHTML = '<span class="badge badge-ok">✓ Installed</span>';
+      toast('faster-whisper installed.', 'ok');
+      refreshCaptionInstallStatus();
+    } else if (sd.status === 'error') {
+      clearInterval(poll);
+      btn.disabled = false; btn.textContent = 'Install caption deps';
+      stat.innerHTML = '<span class="badge badge-error">✗ ' + (sd.error || 'failed') + '</span>';
+      toast('Install failed — see log.', 'error');
+    }
+  }, 1200);
 }
 
 async function validateAndSaveOpenrouter() {
@@ -1636,6 +1721,8 @@ async function saveSettings() {
     max_clips:          parseInt(document.getElementById('max-clips').value),
     use_ai_thumbnail:   document.getElementById('use-ai-thumb').checked,
     thumbnail_variants: parseInt(document.getElementById('thumb-variants').value) || 1,
+    burn_captions:      document.getElementById('burn-captions').checked,
+    caption_model:      document.getElementById('caption-model').value,
   };
   await fetch('/api/config', {
     method: 'POST', headers: {'Content-Type':'application/json'},

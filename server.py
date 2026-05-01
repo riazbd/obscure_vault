@@ -48,6 +48,8 @@ def load_config():
         "max_clips": 25,
         "use_ai_thumbnail": True,
         "thumbnail_variants": 1,
+        "burn_captions": False,
+        "caption_model": "base.en",
     }
 
 def save_config(data):
@@ -145,6 +147,32 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
         m, s = int(duration // 60), int(duration % 60)
         log(f"✅ Duration: {m}m {s}s")
         job["duration"] = f"{m}:{s:02d}"
+
+        # ── Step 1b: Captions (optional, before footage so it can run concurrently
+        #            on a faster box; here it's serial to spare RAM) ──
+        captions_ass = None
+        if cfg.get("burn_captions"):
+            try:
+                from engines import captions as cap_engine
+                if not cap_engine.is_available():
+                    log("⚠️  burn_captions enabled but faster-whisper not installed; skipping")
+                else:
+                    progress(14, "Generating captions...")
+                    cap_result = cap_engine.build(
+                        vo_path, workspace,
+                        model_name=cfg.get("caption_model", "base.en"),
+                        on_log=log,
+                    )
+                    captions_ass = cap_result["ass"]
+                    # Copy .srt into output dir for YouTube upload
+                    srt_dest = OUTPUT_DIR / f"{job_name}.srt"
+                    try:
+                        shutil.copyfile(cap_result["srt"], srt_dest)
+                    except Exception:
+                        pass
+            except Exception as e:
+                log(f"⚠️  caption build failed, continuing without burn-in: {e}")
+                captions_ass = None
 
         # ── Step 2: Footage ──────────────────────────────
         progress(18, "Searching Pexels for footage...")
@@ -319,27 +347,45 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
         final_mp4 = OUTPUT_DIR / f"{job_name}.mp4"
         music_vol = cfg.get("music_volume", 0.12)
 
+        # If captions exist, copy the .ass into the workspace so we can
+        # reference it by relative name (cwd=workspace) and avoid the
+        # cross-platform horror of escaping a subtitle filter path.
+        sub_chain = ""
+        if captions_ass:
+            sub_chain = "subtitles=captions.ass,"
+
+        # Filter graph: video subtitle burn-in + (optional) music mix.
+        filter_parts = []
+        if sub_chain:
+            filter_parts.append(f"[0:v]{sub_chain[:-1]}[v]")
+            video_map = ["-map", "[v]"]
+        else:
+            video_map = ["-map", "0:v"]
+
         if music_path:
             audio_in  = ["-i", str(vo_path), "-i", str(music_path)]
-            af        = (f"[1:a]aloop=loop=-1:size=2e+09,volume={music_vol}[m];"
-                         f"[0:a][m]amix=inputs=2:duration=first:dropout_transition=3[aout]")
-            audio_map = ["-filter_complex", af, "-map", "0:v", "-map", "[aout]"]
+            filter_parts.append(
+                f"[2:a]aloop=loop=-1:size=2e+09,volume={music_vol}[m];"
+                f"[1:a][m]amix=inputs=2:duration=first:dropout_transition=3[aout]"
+            )
+            audio_map = ["-map", "[aout]"]
         else:
             audio_in  = ["-i", str(vo_path)]
-            audio_map = ["-map", "0:v", "-map", "1:a"]
+            audio_map = ["-map", "1:a"]
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(footage_track),
-            *audio_in,
+        cmd = ["ffmpeg", "-y", "-i", str(footage_track), *audio_in]
+        if filter_parts:
+            cmd += ["-filter_complex", ";".join(filter_parts)]
+        cmd += [
             "-t", str(duration),
-            *audio_map,
+            *video_map, *audio_map,
             "-c:v", "libx264", "-preset", "medium", "-crf", "20",
             "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart", "-pix_fmt", "yuv420p",
-            str(final_mp4)
+            str(final_mp4),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                cwd=str(workspace))
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg assembly failed:\n{result.stderr[-2000:]}")
 
@@ -855,6 +901,61 @@ def thumb_status(job_id):
         "status": job["status"],
         "log":    job["log"][-30:],
         "result": job["result"],
+        "error":  job["error"],
+    })
+
+
+# ── Captions: status + install dependency ───────────────
+@app.route("/api/captions/status", methods=["GET"])
+def captions_status():
+    from engines import captions as cap
+    return jsonify({"available": cap.is_available()})
+
+
+# Install jobs (so the UI can stream pip output without a long blocking req)
+install_jobs = {}
+
+
+def _run_install_captions(job_id: str):
+    job = install_jobs[job_id]
+    cmd = [sys.executable, "-m", "pip", "install",
+           "--break-system-packages", "faster-whisper"]
+    job["log"].append("$ " + " ".join(cmd))
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        for line in iter(proc.stdout.readline, ""):
+            line = line.rstrip()
+            if line:
+                job["log"].append(line)
+                if len(job["log"]) > 400:
+                    job["log"] = job["log"][-300:]
+        proc.wait()
+        job["status"] = "done" if proc.returncode == 0 else "error"
+        if proc.returncode != 0:
+            job["error"] = f"pip exited {proc.returncode}"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"]  = str(e)
+
+
+@app.route("/api/captions/install", methods=["POST"])
+def captions_install():
+    job_id = "i_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    install_jobs[job_id] = {"status": "running", "log": [], "error": None}
+    threading.Thread(target=_run_install_captions, args=(job_id,),
+                     daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/captions/install-status/<job_id>")
+def captions_install_status(job_id):
+    job = install_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-50:],
         "error":  job["error"],
     })
 
