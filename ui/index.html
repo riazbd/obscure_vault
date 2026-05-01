@@ -771,10 +771,20 @@ A 15-minute video needs ~2160 words."
                 <div class="form-hint">The pipeline generates voiceover at ~144 words per minute using Edge TTS.</div>
               </div>
 
-              <button class="btn btn-primary btn-lg btn-full" id="gen-btn" onclick="startGeneration()">
-                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                Generate Video
-              </button>
+              <div style="display:flex;gap:10px;flex-wrap:wrap">
+                <button class="btn btn-primary btn-lg" id="gen-btn" style="flex:1;min-width:220px" onclick="startGeneration()">
+                  <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                  Generate Video
+                </button>
+                <button class="btn btn-ghost btn-lg" id="thumb-test-btn" onclick="testThumbnail()" title="Preview an AI thumbnail without rendering a full video">
+                  Test Thumbnail
+                </button>
+              </div>
+              <div id="thumb-test-result" style="margin-top:14px;display:none">
+                <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px" id="thumb-test-meta"></div>
+                <img id="thumb-test-img" style="width:100%;max-width:480px;border:1px solid #222;border-radius:6px;display:block">
+              </div>
+              <pre id="thumb-test-log" style="display:none;max-height:140px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:10px;font-size:11px;color:var(--text-dim);margin-top:8px;white-space:pre-wrap"></pre>
             </div>
 
             <!-- Result -->
@@ -976,6 +986,23 @@ A 15-minute video needs ~2160 words."
               <div class="slider-val" id="vol-val">12%</div>
             </div>
             <div class="form-hint">Keep this low (8–15%) so the voiceover stays clear and front. 0% = no music.</div>
+          </div>
+        </div>
+
+        <!-- AI Thumbnail -->
+        <div class="card">
+          <div class="card-title">AI Thumbnail</div>
+          <div class="form-group">
+            <label class="form-label" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+              <input type="checkbox" id="use-ai-thumb" style="width:18px;height:18px;accent-color:var(--gold)">
+              <span>Use AI-generated thumbnail (free, via Pollinations + OpenRouter)</span>
+            </label>
+            <div class="form-hint">Falls back to the legacy frame-based thumbnail if anything fails. Requires the OpenRouter key above.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Variants per video (for A/B testing)</label>
+            <input class="form-input" id="thumb-variants" type="number" min="1" max="3" value="1" style="max-width:120px">
+            <div class="form-hint">Extra variants saved alongside the primary as <code>*_v2.jpg</code>, <code>*_v3.jpg</code>.</div>
           </div>
         </div>
 
@@ -1465,6 +1492,69 @@ async function generateScriptWithAI() {
 }
 
 /* ════════════════════════════════════════════════════════
+   THUMBNAIL PREVIEW
+════════════════════════════════════════════════════════ */
+let thumbPoll = null;
+
+async function testThumbnail() {
+  const title = document.getElementById('vid-title').value.trim();
+  if (title.length < 4) { toast('Enter a video title first.', 'error'); return; }
+
+  const btn    = document.getElementById('thumb-test-btn');
+  const resBox = document.getElementById('thumb-test-result');
+  const logEl  = document.getElementById('thumb-test-log');
+
+  btn.disabled    = true;
+  btn.textContent = 'Working...';
+  resBox.style.display = 'none';
+  logEl.style.display  = 'block';
+  logEl.textContent    = '';
+
+  let r, d;
+  try {
+    r = await fetch('/api/test-thumbnail', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ title, variants: 1 })
+    });
+    d = await r.json();
+  } catch (e) {
+    toast('Network error.', 'error');
+    btn.disabled = false; btn.textContent = 'Test Thumbnail';
+    return;
+  }
+  if (!r.ok) {
+    toast(d.error || 'Failed.', 'error');
+    btn.disabled = false; btn.textContent = 'Test Thumbnail';
+    return;
+  }
+
+  const jobId = d.job_id;
+  if (thumbPoll) clearInterval(thumbPoll);
+  thumbPoll = setInterval(async () => {
+    const sr = await fetch('/api/thumb-status/' + jobId);
+    const sd = await sr.json();
+    logEl.textContent = (sd.log || []).join('\n');
+    logEl.scrollTop   = logEl.scrollHeight;
+
+    if (sd.status === 'done') {
+      clearInterval(thumbPoll); thumbPoll = null;
+      const res  = sd.result;
+      const img  = document.getElementById('thumb-test-img');
+      const meta = document.getElementById('thumb-test-meta');
+      img.src = '/api/outputs/thumbnail/' + encodeURIComponent(res.primary) + '?t=' + Date.now();
+      meta.textContent = 'Punchline: "' + (res.punchline||'') + '" · saved as ' + res.primary;
+      resBox.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Test Thumbnail';
+      toast('Thumbnail preview ready.', 'ok');
+    } else if (sd.status === 'error') {
+      clearInterval(thumbPoll); thumbPoll = null;
+      toast('Thumbnail failed: ' + (sd.error || 'unknown'), 'error');
+      btn.disabled = false; btn.textContent = 'Test Thumbnail';
+    }
+  }, 1500);
+}
+
+/* ════════════════════════════════════════════════════════
    SETTINGS
 ════════════════════════════════════════════════════════ */
 async function loadSettings() {
@@ -1490,6 +1580,8 @@ async function loadSettings() {
     document.getElementById('openrouter-status').innerHTML =
       '<span class="badge badge-ok">✓ Key saved</span>';
   }
+  document.getElementById('use-ai-thumb').checked = d.use_ai_thumbnail !== false;
+  document.getElementById('thumb-variants').value = d.thumbnail_variants || 1;
 }
 
 async function validateAndSaveOpenrouter() {
@@ -1542,6 +1634,8 @@ async function saveSettings() {
     music_volume:       parseFloat(document.getElementById('music-vol').value),
     video_resolution:   res,
     max_clips:          parseInt(document.getElementById('max-clips').value),
+    use_ai_thumbnail:   document.getElementById('use-ai-thumb').checked,
+    thumbnail_variants: parseInt(document.getElementById('thumb-variants').value) || 1,
   };
   await fetch('/api/config', {
     method: 'POST', headers: {'Content-Type':'application/json'},

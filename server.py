@@ -45,7 +45,9 @@ def load_config():
         "tts_voice": "en-US-GuyNeural",
         "music_volume": 0.12,
         "video_resolution": [1920, 1080],
-        "max_clips": 25
+        "max_clips": 25,
+        "use_ai_thumbnail": True,
+        "thumbnail_variants": 1,
     }
 
 def save_config(data):
@@ -347,77 +349,93 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
 
         # ── Step 6: Thumbnail ────────────────────────────
         thumb = OUTPUT_DIR / f"{job_name}_thumbnail.jpg"
-        TW, TH = 1280, 720
-        img = Image.new("RGB", (TW, TH), (10, 8, 12))
+        used_ai_thumb = False
 
-        if footage_paths:
+        if cfg.get("use_ai_thumbnail") and cfg.get("openrouter_api_key"):
             try:
-                frame = workspace / "tframe.jpg"
-                subprocess.run([
-                    "ffmpeg", "-y", "-i", str(footage_paths[0]),
-                    "-ss", "00:00:04", "-vframes", "1",
-                    "-vf", f"scale={TW}:{TH}:force_original_aspect_ratio=increase,crop={TW}:{TH}",
-                    str(frame)
-                ], capture_output=True)
-                if frame.exists():
-                    bg = Image.open(frame).convert("RGB")
-                    bg = ImageEnhance.Brightness(bg).enhance(0.28)
-                    bg = bg.filter(ImageFilter.GaussianBlur(2))
-                    img.paste(bg)
+                from engines import thumbnail as thumb_engine
+                thumb_engine.generate(
+                    cfg["openrouter_api_key"], title, thumb,
+                    variants=int(cfg.get("thumbnail_variants", 1) or 1),
+                    on_log=log,
+                )
+                used_ai_thumb = True
+            except Exception as e:
+                log(f"⚠️  AI thumbnail failed, falling back to legacy: {e}")
+
+        if not used_ai_thumb:
+            TW, TH = 1280, 720
+            img = Image.new("RGB", (TW, TH), (10, 8, 12))
+
+            if footage_paths:
+                try:
+                    frame = workspace / "tframe.jpg"
+                    subprocess.run([
+                        "ffmpeg", "-y", "-i", str(footage_paths[0]),
+                        "-ss", "00:00:04", "-vframes", "1",
+                        "-vf", f"scale={TW}:{TH}:force_original_aspect_ratio=increase,crop={TW}:{TH}",
+                        str(frame)
+                    ], capture_output=True)
+                    if frame.exists():
+                        bg = Image.open(frame).convert("RGB")
+                        bg = ImageEnhance.Brightness(bg).enhance(0.28)
+                        bg = bg.filter(ImageFilter.GaussianBlur(2))
+                        img.paste(bg)
+                except Exception:
+                    pass
+
+            draw = ImageDraw.Draw(img)
+            vig  = Image.new("RGBA", (TW, TH), (0, 0, 0, 0))
+            vd   = ImageDraw.Draw(vig)
+            for i in range(300):
+                alpha = int((i / 300) ** 1.9 * 215)
+                vd.rectangle([i, i, TW-i, TH-i], outline=(0, 0, 0, alpha))
+            img.paste(Image.new("RGB", (TW, TH), (0,0,0)), mask=vig.split()[3])
+
+            draw.rectangle([0, 0, TW, 7], fill=(190, 18, 18))
+            draw.rectangle([0, TH-7, TW, TH], fill=(190, 18, 18))
+
+            font_candidates = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                "C:/Windows/Fonts/arialbd.ttf",
+                "/Library/Fonts/Arial Bold.ttf",
+                "/System/Library/Fonts/Helvetica.ttc",
+            ]
+            bold_font = next((f for f in font_candidates if Path(f).exists()), None)
+            try:
+                f_sm    = ImageFont.truetype(bold_font, 24) if bold_font else ImageFont.load_default()
+                f_title = ImageFont.truetype(bold_font, 76) if bold_font else ImageFont.load_default()
+                f_tag   = ImageFont.truetype(bold_font, 26) if bold_font else ImageFont.load_default()
             except Exception:
-                pass
+                f_sm = f_title = f_tag = ImageFont.load_default()
 
-        draw = ImageDraw.Draw(img)
-        vig  = Image.new("RGBA", (TW, TH), (0, 0, 0, 0))
-        vd   = ImageDraw.Draw(vig)
-        for i in range(300):
-            alpha = int((i / 300) ** 1.9 * 215)
-            vd.rectangle([i, i, TW-i, TH-i], outline=(0, 0, 0, alpha))
-        img.paste(Image.new("RGB", (TW, TH), (0,0,0)), mask=vig.split()[3])
+            draw.text((30, 24), "OBSCURA VAULT", font=f_sm, fill=(190, 18, 18))
 
-        draw.rectangle([0, 0, TW, 7], fill=(190, 18, 18))
-        draw.rectangle([0, TH-7, TW, TH], fill=(190, 18, 18))
+            words, lines2, current2 = title.upper().split(), [], ""
+            for word in words:
+                test = (current2 + " " + word).strip()
+                if len(test) <= 22:
+                    current2 = test
+                else:
+                    if current2:
+                        lines2.append(current2)
+                    current2 = word
+            if current2:
+                lines2.append(current2)
 
-        font_candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-            "C:/Windows/Fonts/arialbd.ttf",
-            "/Library/Fonts/Arial Bold.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-        ]
-        bold_font = next((f for f in font_candidates if Path(f).exists()), None)
-        try:
-            f_sm    = ImageFont.truetype(bold_font, 24) if bold_font else ImageFont.load_default()
-            f_title = ImageFont.truetype(bold_font, 76) if bold_font else ImageFont.load_default()
-            f_tag   = ImageFont.truetype(bold_font, 26) if bold_font else ImageFont.load_default()
-        except Exception:
-            f_sm = f_title = f_tag = ImageFont.load_default()
+            lh = 90
+            start_y = (TH - len(lines2) * lh) // 2 - 30
+            for i2, line in enumerate(lines2):
+                y = start_y + i2 * lh
+                draw.text((54, y+5), line, font=f_title, fill=(0,0,0))
+                draw.text((52, y), line, font=f_title, fill=(248, 240, 220))
 
-        draw.text((30, 24), "OBSCURA VAULT", font=f_sm, fill=(190, 18, 18))
+            draw.text((30, TH - 52), "History They Buried. We Dig It Up.",
+                      font=f_tag, fill=(155, 135, 100))
 
-        words, lines2, current2 = title.upper().split(), [], ""
-        for word in words:
-            test = (current2 + " " + word).strip()
-            if len(test) <= 22:
-                current2 = test
-            else:
-                if current2:
-                    lines2.append(current2)
-                current2 = word
-        if current2:
-            lines2.append(current2)
+            img.save(str(thumb), "JPEG", quality=95)
 
-        lh = 90
-        start_y = (TH - len(lines2) * lh) // 2 - 30
-        for i2, line in enumerate(lines2):
-            y = start_y + i2 * lh
-            draw.text((54, y+5), line, font=f_title, fill=(0,0,0))
-            draw.text((52, y), line, font=f_title, fill=(248, 240, 220))
-
-        draw.text((30, TH - 52), "History They Buried. We Dig It Up.",
-                  font=f_tag, fill=(155, 135, 100))
-
-        img.save(str(thumb), "JPEG", quality=95)
         log(f"✅ Thumbnail: {thumb.name}")
 
         # ── Step 7: Metadata ─────────────────────────────
@@ -760,6 +778,77 @@ def generate_script_route():
 @app.route("/api/script-status/<job_id>")
 def script_status(job_id):
     job = script_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-30:],
+        "result": job["result"],
+        "error":  job["error"],
+    })
+
+
+# ── Standalone thumbnail preview (no full pipeline) ──────
+thumb_jobs = {}   # job_id -> {status, log, result, error}
+
+
+def _run_thumb_job(job_id: str, title: str, variants: int, api_key: str):
+    from engines import thumbnail as thumb_engine
+    job = thumb_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[thumb {job_id}] {msg}")
+
+    try:
+        slug = re.sub(r"[^\w\-]+", "_", title.lower())[:40] or "preview"
+        ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out  = OUTPUT_DIR / f"preview_{ts}_{slug}.jpg"
+        result = thumb_engine.generate(api_key, title, out,
+                                       variants=variants, on_log=log)
+        job["result"] = {
+            "primary":      Path(result["primary"]).name,
+            "variants":     [Path(p).name for p in result["variants"]],
+            "punchline":    result["punchline"],
+            "image_prompt": result["image_prompt"],
+        }
+        job["status"] = "done"
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/test-thumbnail", methods=["POST"])
+def test_thumbnail():
+    data     = request.json or {}
+    title    = (data.get("title") or "").strip()
+    variants = int(data.get("variants") or 1)
+
+    if len(title) < 4:
+        return jsonify({"error": "Title too short."}), 400
+    cfg = load_config()
+    api_key = cfg.get("openrouter_api_key", "").strip()
+    if not api_key:
+        return jsonify({"error": "Set OpenRouter key in Settings first."}), 400
+
+    job_id = "t_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    thumb_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(
+        target=_run_thumb_job,
+        args=(job_id, title, max(1, min(variants, 3)), api_key),
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/thumb-status/<job_id>")
+def thumb_status(job_id):
+    job = thumb_jobs.get(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
     return jsonify({
