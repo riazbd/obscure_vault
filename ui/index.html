@@ -741,6 +741,12 @@ input[type="range"]::-webkit-slider-thumb {
                 <label class="form-label">Target length (minutes)</label>
                 <input class="form-input" id="ai-minutes" type="number" min="3" max="20" step="1" value="10" style="max-width:160px">
               </div>
+              <div class="form-group">
+                <label class="form-label" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+                  <input type="checkbox" id="ai-research" style="width:18px;height:18px;accent-color:var(--gold)">
+                  <span>Research first (slower, claims grounded in Wikipedia + web sources)</span>
+                </label>
+              </div>
               <button class="btn btn-gold btn-full" id="ai-gen-btn" onclick="generateScriptWithAI()">
                 Generate Title + Script + SEO
               </button>
@@ -1135,6 +1141,13 @@ A 15-minute video needs ~2160 words."
             <label class="form-label">Pixabay API key (optional, for extra footage)</label>
             <input class="form-input" id="pixabay-key" type="password" placeholder="optional — sign up at pixabay.com/api/docs/">
             <div class="form-hint">Extra free source. Pexels alone usually works fine.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+              <input type="checkbox" id="use-research" style="width:18px;height:18px;accent-color:var(--gold)">
+              <span>Auto-research every idea before scripting (Wikipedia + web)</span>
+            </label>
+            <div class="form-hint">Adds 1–3 minutes per video. Claims get grounded in real sources, drastically reducing hallucinations.</div>
           </div>
         </div>
 
@@ -1668,8 +1681,9 @@ dz.addEventListener('drop', e => {
 let aiScriptPoll = null;
 
 async function generateScriptWithAI() {
-  const idea    = document.getElementById('ai-idea').value.trim();
-  const minutes = parseFloat(document.getElementById('ai-minutes').value || '10');
+  const idea     = document.getElementById('ai-idea').value.trim();
+  const minutes  = parseFloat(document.getElementById('ai-minutes').value || '10');
+  const research = document.getElementById('ai-research').checked;
   if (idea.length < 8) { toast('Enter a topic first.', 'error'); return; }
 
   const btn   = document.getElementById('ai-gen-btn');
@@ -1685,7 +1699,7 @@ async function generateScriptWithAI() {
   try {
     r = await fetch('/api/generate-script', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ idea, minutes }),
+      body: JSON.stringify({ idea, minutes, research }),
     });
     d = await r.json();
   } catch (e) {
@@ -2104,6 +2118,7 @@ async function loadSettings() {
   document.getElementById('auto-upload').checked   = !!d.auto_upload;
   document.getElementById('default-privacy').value = d.default_privacy || 'private';
   document.getElementById('contains-synth').value  = (d.contains_synthetic_media === false) ? 'false' : 'true';
+  document.getElementById('use-research').checked  = !!d.use_research;
   refreshYTStatus();
   refreshCaptionInstallStatus();
 }
@@ -2218,6 +2233,7 @@ async function saveSettings() {
     auto_upload:        document.getElementById('auto-upload').checked,
     default_privacy:    document.getElementById('default-privacy').value,
     contains_synthetic_media: document.getElementById('contains-synth').value === 'true',
+    use_research:       document.getElementById('use-research').checked,
   };
   await fetch('/api/config', {
     method: 'POST', headers: {'Content-Type':'application/json'},

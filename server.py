@@ -56,6 +56,7 @@ def load_config():
         "auto_upload": False,
         "default_privacy": "private",
         "contains_synthetic_media": True,
+        "use_research": False,
     }
 
 def save_config(data):
@@ -821,7 +822,8 @@ def validate_openrouter():
 script_jobs = {}   # job_id -> {status, log, result, error}
 
 
-def _run_script_job(job_id: str, idea: str, minutes: float, api_key: str):
+def _run_script_job(job_id: str, idea: str, minutes: float, api_key: str,
+                    use_research: bool = False):
     from engines import script as script_engine
     from engines import seo    as seo_engine
     job = script_jobs[job_id]
@@ -834,7 +836,17 @@ def _run_script_job(job_id: str, idea: str, minutes: float, api_key: str):
         if not api_key:
             raise RuntimeError("OpenRouter key not set in Settings.")
 
-        sc = script_engine.generate_script(api_key, idea, minutes, on_log=log)
+        research_pack = None
+        if use_research:
+            from engines import research as research_engine
+            research_pack = research_engine.build_research_pack(
+                api_key, idea, on_log=log)
+
+        sc = script_engine.generate_script(
+            api_key, idea, minutes,
+            research_pack=research_pack,
+            on_log=log,
+        )
 
         # Use planned duration to stamp chapters; the real audio duration
         # will be re-stamped by the video pipeline if it differs significantly.
@@ -871,6 +883,7 @@ def generate_script_route():
     data    = request.json or {}
     idea    = (data.get("idea") or "").strip()
     minutes = float(data.get("minutes") or 10.0)
+    use_research = bool(data.get("research", False))
 
     if len(idea) < 8:
         return jsonify({"error": "Idea is too short (min 8 chars)."}), 400
@@ -888,7 +901,7 @@ def generate_script_route():
     }
     threading.Thread(
         target=_run_script_job,
-        args=(job_id, idea, minutes, api_key),
+        args=(job_id, idea, minutes, api_key, use_research),
         daemon=True,
     ).start()
     return jsonify({"job_id": job_id})
@@ -1385,7 +1398,14 @@ def _run_idea_to_video(job_id: str, idea: dict, minutes: float, cfg: dict):
             raise RuntimeError("OpenRouter key missing")
 
         log(f"📜 generating script for: {idea['title'][:90]}")
+        research_pack = None
+        if cfg.get("use_research", False):
+            from engines import research as research_engine
+            research_pack = research_engine.build_research_pack(
+                api_key, idea["title"], on_log=log)
+
         sc = script_engine.generate_script(api_key, idea["title"], minutes,
+                                           research_pack=research_pack,
                                            on_log=log)
         total_secs = (sc["word_count"] / script_engine.WORDS_PER_MINUTE) * 60
         seo = seo_engine.build_seo_pack(api_key, idea["title"], sc["outline"],
