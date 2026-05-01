@@ -57,6 +57,7 @@ def load_config():
         "default_privacy": "private",
         "contains_synthetic_media": True,
         "use_research": False,
+        "motion_effect": "pan",
     }
 
 def save_config(data):
@@ -200,6 +201,7 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
                     pixabay_key=cfg.get("pixabay_api_key", ""),
                     width=W, height=H,
                     target_chunk_secs=float(cfg.get("chunk_seconds", 10.0)),
+                    motion=cfg.get("motion_effect", "pan"),
                     on_log=log,
                 )
                 footage_track    = br["track"]
@@ -853,6 +855,7 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
                     pixabay_key=cfg.get("pixabay_api_key", ""),
                     width=W, height=H,
                     target_chunk_secs=8.0,
+                    motion=cfg.get("motion_effect", "pan"),
                     on_log=log,
                 )
                 footage_track = br["track"]
@@ -1815,6 +1818,73 @@ def _scheduler_runtime():
         "pipeline_jobs": lambda: jobs,
         "produce_idea":  _scheduler_produce_idea,
     }
+
+
+@app.route("/api/dashboard", methods=["GET"])
+def dashboard():
+    from engines import analytics, ideas as I, scheduler as sched
+    cfg = load_config()
+
+    metrics = analytics.list_metrics()
+    by_vid  = (metrics.get("by_video") or {})
+    uploads = analytics.list_uploads()
+    signals = analytics.compute_token_signals()
+    sched_state = sched.get_state(cfg.get("scheduler", {}))
+    all_ideas   = I.list_all()
+
+    # Channel summary
+    total_views = sum((m.get("views") or 0) for m in by_vid.values())
+    total_subs  = sum((m.get("subs_gained") or 0) for m in by_vid.values())
+    ctrs = [m.get("ctr") for m in by_vid.values() if m.get("ctr")]
+    avd  = [m.get("avg_view_percent") for m in by_vid.values() if m.get("avg_view_percent")]
+    avg_ctr = round(sum(ctrs) / len(ctrs), 2) if ctrs else 0
+    avg_avd = round(sum(avd) / len(avd), 2) if avd else 0
+
+    # Recent uploads (last 10)
+    recent = sorted(uploads, key=lambda u: u.get("uploaded_at", ""),
+                    reverse=True)[:10]
+    for u in recent:
+        u["metrics"] = by_vid.get(u.get("video_id"), {})
+
+    # Top + bottom token signals (10 each)
+    tok_items = sorted(
+        signals.get("tokens", {}).items(),
+        key=lambda x: x[1]["multiplier"], reverse=True,
+    )
+    top_tokens    = [{"token": t, **m} for t, m in tok_items[:10]]
+    bottom_tokens = [{"token": t, **m} for t, m in tok_items[-10:]
+                     if m.get("multiplier", 1) < 1.0]
+
+    # Idea pool snapshot
+    by_status = {"pending": 0, "approved": 0, "produced": 0, "rejected": 0}
+    for it in all_ideas:
+        by_status[it.get("status", "pending")] = by_status.get(
+            it.get("status", "pending"), 0) + 1
+
+    # Pipeline activity today
+    today = datetime.now().strftime("%Y%m%d")
+    todays_jobs = [j for jid, j in jobs.items() if jid.startswith(today)]
+    done = sum(1 for j in todays_jobs if j.get("status") == "done")
+    err  = sum(1 for j in todays_jobs if j.get("status") == "error")
+    running = sum(1 for j in todays_jobs if j.get("status") == "running")
+
+    return jsonify({
+        "channel": {
+            "uploads_tracked":  len(uploads),
+            "total_views":      total_views,
+            "subs_gained":      total_subs,
+            "avg_ctr":          avg_ctr,
+            "avg_view_percent": avg_avd,
+            "metrics_refreshed_at": metrics.get("refreshed_at"),
+        },
+        "recent_uploads":  recent,
+        "top_tokens":      top_tokens,
+        "bottom_tokens":   bottom_tokens,
+        "idea_pool":       by_status,
+        "scheduler":       sched_state["tasks"],
+        "today_pipeline":  {"done": done, "errors": err, "running": running,
+                            "total": len(todays_jobs)},
+    })
 
 
 @app.route("/api/scheduler/state", methods=["GET"])
