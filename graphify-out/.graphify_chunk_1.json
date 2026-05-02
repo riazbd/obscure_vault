@@ -1,0 +1,325 @@
+{
+  "nodes": [
+    {
+      "id": "config_pexels_api_key",
+      "label": "Pexels API Key",
+      "file_type": "code",
+      "source_file": "config.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "config_openrouter_api_key",
+      "label": "OpenRouter API Key",
+      "file_type": "code",
+      "source_file": "config.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "llm_call",
+      "label": "LLM Call",
+      "file_type": "code",
+      "source_file": "llm.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "pipeline_core_generate_voiceover",
+      "label": "Generate Voiceover",
+      "file_type": "code",
+      "source_file": "pipeline_core.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "pipeline_core_fetch_footage",
+      "label": "Fetch Footage",
+      "file_type": "code",
+      "source_file": "pipeline_core.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "server_run_pipeline_thread",
+      "label": "Run Pipeline Thread",
+      "file_type": "code",
+      "source_file": "server.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "engines_analytics_refresh_metrics",
+      "label": "Refresh Metrics",
+      "file_type": "code",
+      "source_file": "engines/analytics.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "engines_footage_build",
+      "label": "Build Footage",
+      "file_type": "code",
+      "source_file": "engines/footage.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "engines_script_generate_script",
+      "label": "Generate Script",
+      "file_type": "code",
+      "source_file": "engines/script.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "engines_research_build_research_pack",
+      "label": "Build Research Pack",
+      "file_type": "code",
+      "source_file": "engines/research.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "engines_upload_publish",
+      "label": "Publish Video",
+      "file_type": "code",
+      "source_file": "engines/upload.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "engines_thumbnail_generate",
+      "label": "Generate Thumbnail",
+      "file_type": "code",
+      "source_file": "engines/thumbnail.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "engines_jobs_upsert_job",
+      "label": "Upsert Job",
+      "file_type": "code",
+      "source_file": "engines/jobs.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "engines_scheduler_start",
+      "label": "Start Scheduler",
+      "file_type": "code",
+      "source_file": "engines/scheduler.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "engines_storage_enforce_output_cap",
+      "label": "Enforce Output Cap",
+      "file_type": "code",
+      "source_file": "engines/storage.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "engines_seo_build_seo_pack",
+      "label": "Build SEO Pack",
+      "file_type": "code",
+      "source_file": "engines/seo.py",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "obscura_vault_pipeline",
+      "label": "Obscura Vault Pipeline",
+      "file_type": "document",
+      "source_file": "GEMINI.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "server_run_pipeline_thread",
+      "target": "engines_script_generate_script",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "server.py",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "server_run_pipeline_thread",
+      "target": "engines_footage_build",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "server.py",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "server_run_pipeline_thread",
+      "target": "engines_upload_publish",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "server.py",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "engines_script_generate_script",
+      "target": "llm_call",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "engines/script.py",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "engines_footage_build",
+      "target": "llm_call",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "engines/footage.py",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "engines_research_build_research_pack",
+      "target": "llm_call",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "engines/research.py",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "engines_thumbnail_generate",
+      "target": "llm_call",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "engines/thumbnail.py",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "engines_seo_build_seo_pack",
+      "target": "llm_call",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "engines/seo.py",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "server_run_pipeline_thread",
+      "target": "engines_jobs_upsert_job",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "server.py",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "engines_scheduler_start",
+      "target": "server_run_pipeline_thread",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "engines/scheduler.py",
+      "source_location": null,
+      "weight": 1.0
+    }
+  ],
+  "hyperedges": [
+    {
+      "id": "core_orchestration",
+      "label": "Core Orchestration",
+      "nodes": [
+        "server_run_pipeline_thread",
+        "pipeline_core_generate_voiceover",
+        "engines_jobs_upsert_job"
+      ],
+      "relation": "participate_in",
+      "confidence": "INFERRED",
+      "confidence_score": 0.9,
+      "source_file": "server.py"
+    },
+    {
+      "id": "content_generation",
+      "label": "Content Generation",
+      "nodes": [
+        "engines_script_generate_script",
+        "engines_research_build_research_pack",
+        "engines_footage_build",
+        "engines_thumbnail_generate",
+        "engines_seo_build_seo_pack"
+      ],
+      "relation": "participate_in",
+      "confidence": "INFERRED",
+      "confidence_score": 0.9,
+      "source_file": "engines/__init__.py"
+    }
+  ],
+  "input_tokens": 0,
+  "output_tokens": 0
+}

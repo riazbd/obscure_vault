@@ -136,6 +136,7 @@ def task_harvest_ideas(get_cfg, runtime):
 
 def task_produce_top_idea(get_cfg, runtime):
     """Pick the best pending idea and start the full pipeline."""
+    import random
     from engines import ideas as I
     cfg = get_cfg()
     or_key = cfg.get("openrouter_api_key", "").strip()
@@ -145,8 +146,32 @@ def task_produce_top_idea(get_cfg, runtime):
     # Don't queue a new render if one is already running.
     pipeline_jobs = runtime["pipeline_jobs"]()
     for j in pipeline_jobs.values():
-        if j.get("status") == "running":
+        if j.get("status") == "running" and j.get("kind") in ["pipeline", "short_pipeline"]:
             return "skip: pipeline already running"
+
+    # Check daily limits
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    state = _load_state()
+    daily_stats = state.get("daily_stats", {})
+    today_stats = daily_stats.get(today_str, {"long": 0, "short": 0})
+    
+    limit_long = int(cfg.get("daily_limit_long", 2))
+    limit_short = int(cfg.get("daily_limit_short", 2))
+
+    can_do_long = limit_long > 0 and today_stats.get("long", 0) < limit_long
+    can_do_short = limit_short > 0 and today_stats.get("short", 0) < limit_short
+
+    if not can_do_long and not can_do_short:
+        return f"skip: daily limits reached (Long: {today_stats.get('long', 0)}/{limit_long}, Short: {today_stats.get('short', 0)}/{limit_short})"
+
+    # Pick format
+    chosen_format = None
+    if can_do_long and can_do_short:
+        chosen_format = random.choice(["long", "short"])
+    elif can_do_long:
+        chosen_format = "long"
+    else:
+        chosen_format = "short"
 
     pending = [it for it in I.list_all() if it.get("status") == "pending"]
     if not pending:
@@ -159,8 +184,15 @@ def task_produce_top_idea(get_cfg, runtime):
     minutes = float(cfg.get("scheduler_minutes", 10))
 
     # Hand off to the existing produce flow via the runtime callback.
-    runtime["produce_idea"](top, minutes)
-    return f"produced: {top['title'][:80]}"
+    runtime["produce_idea"](top, minutes, video_format=chosen_format)
+
+    # Update state
+    today_stats[chosen_format] = today_stats.get(chosen_format, 0) + 1
+    daily_stats[today_str] = today_stats
+    state["daily_stats"] = daily_stats
+    _save_state(state)
+
+    return f"produced: {chosen_format} '{top['title'][:80]}'"
 
 
 def task_refresh_analytics(get_cfg, runtime):

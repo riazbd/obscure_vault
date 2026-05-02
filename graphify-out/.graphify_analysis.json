@@ -1,0 +1,634 @@
+{
+  "communities": {
+    "0": [
+      "engines_scheduler_rationale_233",
+      "engines_scheduler_start",
+      "obscure_vault_server_analytics_refresh",
+      "obscure_vault_server_analytics_refresh_status",
+      "obscure_vault_server_branding_upload",
+      "obscure_vault_server_branding_upload_status",
+      "obscure_vault_server_captions_install",
+      "obscure_vault_server_captions_install_status",
+      "obscure_vault_server_check_ffmpeg",
+      "obscure_vault_server_check_package",
+      "obscure_vault_server_check_pexels_key",
+      "obscure_vault_server_check_python",
+      "obscure_vault_server_delete_music",
+      "obscure_vault_server_delete_output",
+      "obscure_vault_server_download_output",
+      "obscure_vault_server_generate_script_route",
+      "obscure_vault_server_get_config",
+      "obscure_vault_server_get_description",
+      "obscure_vault_server_get_thumbnail",
+      "obscure_vault_server_get_voices",
+      "obscure_vault_server_ideas_harvest",
+      "obscure_vault_server_ideas_harvest_status",
+      "obscure_vault_server_ideas_produce",
+      "obscure_vault_server_install_packages",
+      "obscure_vault_server_job_status",
+      "obscure_vault_server_list_music",
+      "obscure_vault_server_list_outputs",
+      "obscure_vault_server_load_config",
+      "obscure_vault_server_pick_voice",
+      "obscure_vault_server_rationale_1",
+      "obscure_vault_server_rationale_117",
+      "obscure_vault_server_rationale_1988",
+      "obscure_vault_server_review_status_route",
+      "obscure_vault_server_review_video_route",
+      "obscure_vault_server_run_install_captions",
+      "obscure_vault_server_run_install_youtube",
+      "obscure_vault_server_run_pipeline",
+      "obscure_vault_server_run_short",
+      "obscure_vault_server_save_config",
+      "obscure_vault_server_scheduler_produce_idea",
+      "obscure_vault_server_scheduler_runtime",
+      "obscure_vault_server_scheduler_trigger",
+      "obscure_vault_server_script_status",
+      "obscure_vault_server_set_config",
+      "obscure_vault_server_static_files",
+      "obscure_vault_server_system_check",
+      "obscure_vault_server_test_thumbnail",
+      "obscure_vault_server_thumb_status",
+      "obscure_vault_server_upload_music",
+      "obscure_vault_server_validate_pexels",
+      "obscure_vault_server_yt_auth_status",
+      "obscure_vault_server_yt_install",
+      "obscure_vault_server_yt_install_status",
+      "obscure_vault_server_yt_upload_secrets",
+      "obscure_vault_server_yt_upload_status",
+      "server_py"
+    ],
+    "1": [
+      "engines_analytics_build_youtube_analytics",
+      "engines_analytics_build_youtube_data",
+      "engines_analytics_compute_token_signals",
+      "engines_analytics_fetch_analytics",
+      "engines_analytics_fetch_data_stats",
+      "engines_analytics_list_metrics",
+      "engines_analytics_list_uploads",
+      "engines_analytics_load_metrics",
+      "engines_analytics_load_uploads",
+      "engines_analytics_predict_score_for_idea",
+      "engines_analytics_py",
+      "engines_analytics_rationale_1",
+      "engines_analytics_rationale_118",
+      "engines_analytics_rationale_141",
+      "engines_analytics_rationale_185",
+      "engines_analytics_rationale_241",
+      "engines_analytics_rationale_324",
+      "engines_analytics_rationale_55",
+      "engines_analytics_record_upload",
+      "engines_analytics_refresh_metrics",
+      "engines_analytics_save_metrics",
+      "engines_analytics_save_uploads",
+      "engines_analytics_tokens",
+      "engines_review_channel_baseline",
+      "engines_review_hook",
+      "engines_review_load_artifacts",
+      "engines_review_outline_summary",
+      "engines_review_py",
+      "engines_review_rationale_1",
+      "engines_review_rationale_30",
+      "engines_review_rationale_81",
+      "engines_review_review",
+      "engines_review_video_metrics",
+      "engines_scheduler_task_refresh_analytics",
+      "obscure_vault_server_analytics_list",
+      "obscure_vault_server_analytics_signals",
+      "obscure_vault_server_dashboard",
+      "obscure_vault_server_index",
+      "obscure_vault_server_run_analytics_refresh",
+      "obscure_vault_server_run_review"
+    ],
+    "2": [
+      "engines_script_draft_prompt",
+      "engines_script_generate_outline",
+      "engines_script_generate_script",
+      "engines_script_generate_short_script",
+      "engines_script_outline_prompt",
+      "engines_script_py",
+      "engines_script_quality_check",
+      "engines_script_rationale_1",
+      "engines_script_rationale_198",
+      "engines_script_rationale_247",
+      "engines_script_target_word_count",
+      "engines_script_violates_banned",
+      "engines_script_word_count",
+      "engines_seo_build_seo_pack",
+      "engines_seo_chapters_from_outline",
+      "engines_seo_format_timestamp",
+      "engines_seo_generate_description",
+      "engines_seo_generate_titles",
+      "engines_seo_py",
+      "engines_seo_rationale_1",
+      "engines_seo_rationale_24",
+      "engines_seo_title_score",
+      "exception",
+      "llm_call",
+      "llm_py",
+      "obscure_vault_llm_cache_get",
+      "obscure_vault_llm_cache_key",
+      "obscure_vault_llm_cache_put",
+      "obscure_vault_llm_call",
+      "obscure_vault_llm_extract_json",
+      "obscure_vault_llm_llmerror",
+      "obscure_vault_llm_rationale_1",
+      "obscure_vault_llm_rationale_119",
+      "obscure_vault_llm_rationale_209",
+      "obscure_vault_llm_rationale_62",
+      "obscure_vault_llm_validate_key",
+      "obscure_vault_server_run_script_job",
+      "obscure_vault_server_validate_openrouter"
+    ],
+    "3": [
+      "engines_ideas_delete",
+      "engines_ideas_filter_obviously_bad",
+      "engines_ideas_harvest_reddit",
+      "engines_ideas_harvest_wikipedia",
+      "engines_ideas_harvest_youtube_suggest",
+      "engines_ideas_id_for",
+      "engines_ideas_is_duplicate",
+      "engines_ideas_jaccard",
+      "engines_ideas_list_all",
+      "engines_ideas_load",
+      "engines_ideas_normalize",
+      "engines_ideas_py",
+      "engines_ideas_rationale_1",
+      "engines_ideas_rationale_143",
+      "engines_ideas_rationale_276",
+      "engines_ideas_run_harvest",
+      "engines_ideas_save",
+      "engines_ideas_score_with_llm",
+      "engines_ideas_tokens",
+      "engines_ideas_update_status",
+      "engines_scheduler_task_harvest_ideas",
+      "obscure_vault_server_ideas_delete",
+      "obscure_vault_server_ideas_list",
+      "obscure_vault_server_ideas_set_status",
+      "obscure_vault_server_run_harvest",
+      "obscure_vault_server_run_idea_to_video"
+    ],
+    "4": [
+      "engines_research_build_research_pack",
+      "engines_research_cache_path",
+      "engines_research_ddg_search",
+      "engines_research_dedup_claims",
+      "engines_research_extract_facts",
+      "engines_research_fetch_url_text",
+      "engines_research_html_to_text",
+      "engines_research_jaccard",
+      "engines_research_py",
+      "engines_research_rationale_1",
+      "engines_research_rationale_121",
+      "engines_research_rationale_139",
+      "engines_research_rationale_180",
+      "engines_research_rationale_318",
+      "engines_research_rationale_386",
+      "engines_research_rationale_91",
+      "engines_research_render_pack_for_prompt",
+      "engines_research_textextractor",
+      "engines_research_textextractor_handle_data",
+      "engines_research_textextractor_handle_endtag",
+      "engines_research_textextractor_handle_starttag",
+      "engines_research_textextractor_init",
+      "engines_research_tokens",
+      "engines_research_wikipedia_extract",
+      "engines_research_wikipedia_search",
+      "htmlparser"
+    ],
+    "5": [
+      "engines_upload_authorize",
+      "engines_upload_build_youtube",
+      "engines_upload_channel_info",
+      "engines_upload_has_secrets",
+      "engines_upload_has_token",
+      "engines_upload_is_installed",
+      "engines_upload_load_creds",
+      "engines_upload_publish",
+      "engines_upload_py",
+      "engines_upload_rationale_1",
+      "engines_upload_rationale_150",
+      "engines_upload_rationale_64",
+      "engines_upload_rationale_87",
+      "engines_upload_revoke_token",
+      "engines_upload_set_thumbnail",
+      "engines_upload_upload_caption",
+      "engines_upload_upload_video",
+      "obscure_vault_server_run_authorize",
+      "obscure_vault_server_run_yt_upload",
+      "obscure_vault_server_yt_authorize",
+      "obscure_vault_server_yt_revoke",
+      "obscure_vault_server_yt_status",
+      "obscure_vault_server_yt_upload_video"
+    ],
+    "6": [
+      "engines_branding_apply_branding",
+      "engines_branding_apply_for_video_kind",
+      "engines_branding_delete_slot",
+      "engines_branding_has_slot",
+      "engines_branding_list_slots",
+      "engines_branding_normalize_clip",
+      "engines_branding_probe_duration",
+      "engines_branding_py",
+      "engines_branding_rationale_1",
+      "engines_branding_rationale_152",
+      "engines_branding_rationale_215",
+      "engines_branding_rationale_87",
+      "engines_branding_slot_path",
+      "engines_captions_is_available",
+      "obscure_vault_server_branding_delete",
+      "obscure_vault_server_branding_list",
+      "obscure_vault_server_branding_preview",
+      "obscure_vault_server_captions_status",
+      "obscure_vault_server_rationale_126",
+      "obscure_vault_server_run_branding_normalize",
+      "obscure_vault_server_run_pipeline_thread",
+      "obscure_vault_server_run_short_pipeline_thread"
+    ],
+    "7": [
+      "obscure_vault_pipeline_core_assemble_video",
+      "obscure_vault_pipeline_core_build_footage_track",
+      "obscure_vault_pipeline_core_cleanup_raw_footage",
+      "obscure_vault_pipeline_core_clip_real_duration",
+      "obscure_vault_pipeline_core_collect_input",
+      "obscure_vault_pipeline_core_download_clip",
+      "obscure_vault_pipeline_core_fetch_footage",
+      "obscure_vault_pipeline_core_generate_thumbnail",
+      "obscure_vault_pipeline_core_generate_voiceover",
+      "obscure_vault_pipeline_core_get_duration",
+      "obscure_vault_pipeline_core_main",
+      "obscure_vault_pipeline_core_make_dark_card",
+      "obscure_vault_pipeline_core_pexels_search",
+      "obscure_vault_pipeline_core_pick_keywords",
+      "obscure_vault_pipeline_core_pick_music",
+      "obscure_vault_pipeline_core_rationale_1",
+      "obscure_vault_pipeline_core_save_metadata",
+      "obscure_vault_pipeline_core_slugify",
+      "obscure_vault_pipeline_core_tts_async",
+      "pipeline_core_py"
+    ],
+    "8": [
+      "engines_footage_build",
+      "engines_footage_build_footage_track",
+      "engines_footage_chunk_script_by_time",
+      "engines_footage_download",
+      "engines_footage_generate_visual_queries",
+      "engines_footage_pick_clips_for_chunks",
+      "engines_footage_process_clip_segment",
+      "engines_footage_py",
+      "engines_footage_rationale_1",
+      "engines_footage_rationale_105",
+      "engines_footage_rationale_261",
+      "engines_footage_rationale_326",
+      "engines_footage_rationale_389",
+      "engines_footage_rationale_49",
+      "engines_footage_score",
+      "engines_footage_search_pexels",
+      "engines_footage_search_pixabay",
+      "engines_footage_split_sentences",
+      "server_run_pipeline_thread"
+    ],
+    "9": [
+      "engines_scheduler_compute_next_run",
+      "engines_scheduler_get_state",
+      "engines_scheduler_is_due",
+      "engines_scheduler_load_state",
+      "engines_scheduler_log",
+      "engines_scheduler_py",
+      "engines_scheduler_rationale_1",
+      "engines_scheduler_rationale_138",
+      "engines_scheduler_rationale_267",
+      "engines_scheduler_rationale_61",
+      "engines_scheduler_record_run",
+      "engines_scheduler_run_task_async",
+      "engines_scheduler_save_state",
+      "engines_scheduler_stop",
+      "engines_scheduler_task_produce_top_idea",
+      "engines_scheduler_tick",
+      "engines_scheduler_trigger_now",
+      "obscure_vault_server_scheduler_state"
+    ],
+    "10": [
+      "engines_scheduler_task_storage_cleanup",
+      "engines_storage_cleanup_all_workspaces",
+      "engines_storage_cleanup_workspace",
+      "engines_storage_du",
+      "engines_storage_enforce_output_cap",
+      "engines_storage_estimate_freeable",
+      "engines_storage_mb",
+      "engines_storage_py",
+      "engines_storage_rationale_1",
+      "engines_storage_rationale_114",
+      "engines_storage_rationale_142",
+      "engines_storage_rationale_187",
+      "engines_storage_rationale_36",
+      "engines_storage_rationale_54",
+      "engines_storage_rationale_83",
+      "engines_storage_usage",
+      "obscure_vault_server_storage_cleanup_route",
+      "obscure_vault_server_storage_usage_route"
+    ],
+    "11": [
+      "engines_thumbnail_avg_luminance",
+      "engines_thumbnail_compose_thumbnail",
+      "engines_thumbnail_ensure_dark",
+      "engines_thumbnail_font",
+      "engines_thumbnail_generate",
+      "engines_thumbnail_generate_image_prompt",
+      "engines_thumbnail_generate_punchline",
+      "engines_thumbnail_img_cache_key",
+      "engines_thumbnail_pollinations_image",
+      "engines_thumbnail_py",
+      "engines_thumbnail_rationale_1",
+      "engines_thumbnail_rationale_128",
+      "engines_thumbnail_rationale_199",
+      "engines_thumbnail_rationale_310",
+      "engines_thumbnail_rationale_51",
+      "engines_thumbnail_wrap_punchline",
+      "obscure_vault_server_run_thumb_job"
+    ],
+    "12": [
+      "engines_jobs_append_log",
+      "engines_jobs_conn",
+      "engines_jobs_delete_old",
+      "engines_jobs_ensure_schema",
+      "engines_jobs_get_job",
+      "engines_jobs_list_jobs",
+      "engines_jobs_mark_orphans_failed",
+      "engines_jobs_now",
+      "engines_jobs_py",
+      "engines_jobs_rationale_1",
+      "engines_jobs_rationale_184",
+      "engines_jobs_rationale_196",
+      "engines_jobs_upsert_job",
+      "obscure_vault_server_jobs_cleanup_endpoint",
+      "obscure_vault_server_jobs_get_endpoint",
+      "obscure_vault_server_jobs_list_endpoint"
+    ],
+    "13": [
+      "engines_captions_ass_escape",
+      "engines_captions_ass_time",
+      "engines_captions_build",
+      "engines_captions_chunk_words_into_cards",
+      "engines_captions_py",
+      "engines_captions_rationale_1",
+      "engines_captions_rationale_252",
+      "engines_captions_rationale_27",
+      "engines_captions_rationale_94",
+      "engines_captions_srt_time",
+      "engines_captions_transcribe",
+      "engines_captions_wrap_two_lines",
+      "engines_captions_write_ass",
+      "engines_captions_write_srt"
+    ],
+    "14": [
+      "analytics_token_signals",
+      "ideas_niche_fit",
+      "plan_obscura_vault",
+      "plan_phase_ledger",
+      "review_llm_scorecard",
+      "scheduler_autopilot",
+      "storage_output_cap"
+    ],
+    "15": [
+      "obscure_vault_start_check_ffmpeg",
+      "obscure_vault_start_check_packages",
+      "obscure_vault_start_check_python",
+      "obscure_vault_start_cprint",
+      "obscure_vault_start_main",
+      "start_py"
+    ],
+    "16": [
+      "footage_semantic_broll",
+      "llm_free_cascade",
+      "research_fact_grounding",
+      "script_quality_gates",
+      "thumbnail_composition"
+    ],
+    "17": [
+      "graphify_setup_py",
+      "obscure_vault_graphify_setup_detect_files",
+      "obscure_vault_graphify_setup_setup"
+    ],
+    "18": [
+      "captions_whisper_burnin",
+      "jobs_sqlite_history",
+      "ui_single_file"
+    ],
+    "19": [
+      "config_py"
+    ],
+    "20": [
+      "engines_init_py"
+    ],
+    "21": [
+      "config_pexels_api_key"
+    ],
+    "22": [
+      "config_openrouter_api_key"
+    ],
+    "23": [
+      "pipeline_core_generate_voiceover"
+    ],
+    "24": [
+      "pipeline_core_fetch_footage"
+    ],
+    "25": [
+      "obscura_vault_pipeline"
+    ],
+    "26": [
+      "readme_youtube_engine"
+    ],
+    "27": [
+      "requirements_dependencies"
+    ],
+    "28": [
+      "branding_stings"
+    ],
+    "29": [
+      "seo_scoring_rubric"
+    ],
+    "30": [
+      "upload_resumable"
+    ]
+  },
+  "cohesion": {
+    "0": 0.05,
+    "1": 0.08,
+    "2": 0.09,
+    "3": 0.14,
+    "4": 0.11,
+    "5": 0.15,
+    "6": 0.14,
+    "7": 0.19,
+    "8": 0.15,
+    "9": 0.18,
+    "10": 0.2,
+    "11": 0.18,
+    "12": 0.25,
+    "13": 0.23,
+    "14": 0.33,
+    "15": 0.8,
+    "16": 0.4,
+    "17": 0.67,
+    "18": 0.67,
+    "19": 1.0,
+    "20": 1.0,
+    "21": 1.0,
+    "22": 1.0,
+    "23": 1.0,
+    "24": 1.0,
+    "25": 1.0,
+    "26": 1.0,
+    "27": 1.0,
+    "28": 1.0,
+    "29": 1.0,
+    "30": 1.0
+  },
+  "gods": [
+    {
+      "id": "engines_scheduler_start",
+      "label": "start()",
+      "degree": 21
+    },
+    {
+      "id": "obscure_vault_llm_call",
+      "label": "call()",
+      "degree": 19
+    },
+    {
+      "id": "obscure_vault_server_run_pipeline_thread",
+      "label": "run_pipeline_thread()",
+      "degree": 15
+    },
+    {
+      "id": "engines_ideas_run_harvest",
+      "label": "run_harvest()",
+      "degree": 15
+    },
+    {
+      "id": "obscure_vault_server_run_short_pipeline_thread",
+      "label": "run_short_pipeline_thread()",
+      "degree": 14
+    },
+    {
+      "id": "obscure_vault_server_load_config",
+      "label": "load_config()",
+      "degree": 13
+    },
+    {
+      "id": "engines_script_generate_script",
+      "label": "generate_script()",
+      "degree": 13
+    },
+    {
+      "id": "obscure_vault_pipeline_core_main",
+      "label": "main()",
+      "degree": 12
+    },
+    {
+      "id": "engines_footage_build",
+      "label": "build()",
+      "degree": 12
+    },
+    {
+      "id": "engines_research_build_research_pack",
+      "label": "build_research_pack()",
+      "degree": 11
+    }
+  ],
+  "surprises": [
+    {
+      "source": "Whisper Transcription & Burn-in",
+      "target": "Single-File Pipeline UI",
+      "source_files": [
+        "docs/captions.md",
+        "ui/index.html"
+      ],
+      "confidence": "INFERRED",
+      "relation": "semantically_similar_to",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; semantically similar concepts with no structural link"
+    },
+    {
+      "source": "generate_visual_queries()",
+      "target": "call()",
+      "source_files": [
+        "engines\\footage.py",
+        "llm.py"
+      ],
+      "confidence": "INFERRED",
+      "relation": "calls",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; bridges separate communities"
+    },
+    {
+      "source": "score_with_llm()",
+      "target": "call()",
+      "source_files": [
+        "engines\\ideas.py",
+        "llm.py"
+      ],
+      "confidence": "INFERRED",
+      "relation": "calls",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; bridges separate communities"
+    },
+    {
+      "source": "extract_facts()",
+      "target": "call()",
+      "source_files": [
+        "engines\\research.py",
+        "llm.py"
+      ],
+      "confidence": "INFERRED",
+      "relation": "calls",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; bridges separate communities"
+    },
+    {
+      "source": "review()",
+      "target": "call()",
+      "source_files": [
+        "engines\\review.py",
+        "llm.py"
+      ],
+      "confidence": "INFERRED",
+      "relation": "calls",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; bridges separate communities"
+    }
+  ],
+  "questions": [
+    {
+      "type": "bridge_node",
+      "question": "Why does `run_short_pipeline_thread()` connect `Community 6` to `Community 0`, `Community 2`, `Community 5`, `Community 8`, `Community 10`, `Community 11`, `Community 12`?",
+      "why": "High betweenness centrality (0.115) - this node is a cross-community bridge."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `run_pipeline_thread()` connect `Community 6` to `Community 0`, `Community 3`, `Community 5`, `Community 8`, `Community 10`, `Community 11`, `Community 12`?",
+      "why": "High betweenness centrality (0.110) - this node is a cross-community bridge."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `call()` connect `Community 2` to `Community 1`, `Community 3`, `Community 4`, `Community 8`, `Community 11`?",
+      "why": "High betweenness centrality (0.089) - this node is a cross-community bridge."
+    },
+    {
+      "type": "verify_inferred",
+      "question": "Are the 17 inferred relationships involving `start()` (e.g. with `run_short()` and `run_pipeline()`) actually correct?",
+      "why": "`start()` has 17 INFERRED edges - model-reasoned connections that need verification."
+    },
+    {
+      "type": "verify_inferred",
+      "question": "Are the 11 inferred relationships involving `call()` (e.g. with `generate_visual_queries()` and `score_with_llm()`) actually correct?",
+      "why": "`call()` has 11 INFERRED edges - model-reasoned connections that need verification."
+    },
+    {
+      "type": "verify_inferred",
+      "question": "Are the 13 inferred relationships involving `run_pipeline_thread()` (e.g. with `upsert_job()` and `is_available()`) actually correct?",
+      "why": "`run_pipeline_thread()` has 13 INFERRED edges - model-reasoned connections that need verification."
+    },
+    {
+      "type": "verify_inferred",
+      "question": "Are the 4 inferred relationships involving `run_harvest()` (e.g. with `_run_harvest()` and `compute_token_signals()`) actually correct?",
+      "why": "`run_harvest()` has 4 INFERRED edges - model-reasoned connections that need verification."
+    }
+  ]
+}

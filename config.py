@@ -3,13 +3,18 @@
 #  Edit this file before running pipeline.py
 # ─────────────────────────────────────────────────────────
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Get your FREE Pexels API key at: https://www.pexels.com/api/
-PEXELS_API_KEY = "YOUR_PEXELS_API_KEY_HERE"
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "YOUR_PEXELS_API_KEY_HERE")
 
 # OpenRouter API key — free models only by default.
 # Get yours at: https://openrouter.ai/keys
 # Used by: idea / script / SEO engines.
-OPENROUTER_API_KEY = ""
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
 # Edge TTS voice — documentary-style picks:
 #   en-US-GuyNeural      ← deep, authoritative (DEFAULT)

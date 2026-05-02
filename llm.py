@@ -23,11 +23,12 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # Default cascade of free OpenRouter models, best → fallback.
 # Override per-call by passing `models=[...]`.
 DEFAULT_MODELS = [
-    "deepseek/deepseek-chat-v3-0324:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "google/gemma-4-31b-it:free",
     "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen-2.5-72b-instruct:free",
-    "google/gemini-2.0-flash-exp:free",
-    "mistralai/mistral-small-3.1-24b-instruct:free",
+    "qwen/qwen3-next-80b-a3b-instruct:free",
+    "openai/gpt-oss-120b:free",
+    "minimax/minimax-m2.5:free",
 ]
 
 

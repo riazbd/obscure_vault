@@ -64,6 +64,8 @@ def load_config():
         "auto_cleanup_workspace": True,
         "output_cap_gb": 30.0,
         "tts_voices": [],
+        "daily_limit_long": 2,
+        "daily_limit_short": 2,
     }
 
 def save_config(data):
@@ -1984,18 +1986,38 @@ def ideas_produce(idea_id):
 #  Scheduler routes
 # ════════════════════════════════════════════════════════
 
-def _scheduler_produce_idea(idea: dict, minutes: float):
+def _scheduler_produce_idea(idea: dict, minutes: float, video_format: str = "long"):
     """Runtime callback the scheduler uses to start the produce flow."""
+    from engines import ideas as I
     cfg = load_config()
-    job_id = "ip_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-    script_jobs[job_id] = {
-        "status": "running", "log": [], "result": None, "error": None,
-    }
-    threading.Thread(
-        target=_run_idea_to_video,
-        args=(job_id, idea, minutes, cfg),
-        daemon=True,
-    ).start()
+
+    if video_format == "short":
+        pipeline_id = "sh_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        jobs[pipeline_id] = {
+            "status": "running", "progress": 0, "stage": "Starting Short...",
+            "log": [], "result": None, "error": None, "duration": None,
+        }
+        pipeline_cfg = dict(cfg)
+        pipeline_cfg["_idea_id"] = idea["id"]
+        
+        # Mark as approved so the scheduler doesn't pick it again
+        I.update_status(idea["id"], "approved", pipeline_job=pipeline_id)
+        
+        threading.Thread(
+            target=run_short_pipeline_thread,
+            args=(pipeline_id, idea["title"], 110, pipeline_cfg),
+            daemon=True,
+        ).start()
+    else:
+        job_id = "ip_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        script_jobs[job_id] = {
+            "status": "running", "log": [], "result": None, "error": None,
+        }
+        threading.Thread(
+            target=_run_idea_to_video,
+            args=(job_id, idea, minutes, cfg),
+            daemon=True,
+        ).start()
 
 
 def _scheduler_runtime():
