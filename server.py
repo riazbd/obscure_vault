@@ -2036,6 +2036,318 @@ def branding_preview(slot):
 #  Jobs (persistent)
 # ════════════════════════════════════════════════════════
 
+# ════════════════════════════════════════════════════════
+#  Translation pipeline
+# ════════════════════════════════════════════════════════
+
+@app.route("/api/translate/languages", methods=["GET"])
+def translate_languages():
+    from engines import translate as tr
+    return jsonify([
+        {"code": code, "name": info["name"], "voice": info["voice"]}
+        for code, info in tr.LANGUAGES.items()
+    ])
+
+
+def _run_translation_thread(job_id: str, video_filename: str,
+                            target_lang: str, cfg: dict):
+    from engines import translate as tr
+    from engines import jobs as jobs_db
+    job = jobs[job_id]
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    jobs_db.upsert_job(job_id, kind="translate",
+                       title=f"{video_filename} → {tr.language_name(target_lang)}",
+                       status="running", progress=0,
+                       stage=f"Translating to {tr.language_name(target_lang)}...",
+                       started_at=started)
+
+    def log(msg):
+        job["log"].append(msg)
+        try: jobs_db.append_log(job_id, msg)
+        except Exception: pass
+        print(f"[{job_id}] {msg}")
+
+    def progress(pct, stage):
+        job["progress"] = pct
+        job["stage"]    = stage
+        try: jobs_db.upsert_job(job_id, status="running",
+                                progress=pct, stage=stage)
+        except Exception: pass
+        log(f"[{pct}%] {stage}")
+
+    try:
+        api_key = cfg.get("openrouter_api_key", "").strip()
+        if not api_key:
+            raise RuntimeError("OpenRouter key required for translation")
+
+        source_mp4 = OUTPUT_DIR / video_filename
+        if not source_mp4.exists():
+            raise FileNotFoundError(video_filename)
+
+        # Source job_name is the filename stem
+        src_stem = source_mp4.stem
+        src_workspace = WORKSPACE / src_stem
+        if not src_workspace.exists():
+            raise RuntimeError(
+                f"original workspace gone — re-translate needs the per-job "
+                f"workspace folder ({src_workspace.name}) which has been cleaned up"
+            )
+
+        script_path = src_workspace / "script.txt"
+        if not script_path.exists():
+            raise RuntimeError("source script.txt missing in workspace")
+        en_script = script_path.read_text(encoding="utf-8")
+
+        # Pick the cached coloured-graded footage track produced by the
+        # original render. Filenames vary by branch, try both legacy and
+        # smart-broll layouts.
+        proc_dir = src_workspace / "processed"
+        candidates = [
+            proc_dir / "footage_track.mp4",      # smart B-roll
+            proc_dir / "footage_trimmed.mp4",    # legacy
+        ]
+        footage_track = next((p for p in candidates if p.exists()), None)
+        if not footage_track:
+            raise RuntimeError("no cached footage track in workspace")
+
+        # Set up the translation workspace
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        slug = re.sub(r"[^\w-]+", "_", src_stem)[:40]
+        out_stem = f"{slug}_{target_lang}_{ts}"
+        ws = WORKSPACE / out_stem
+        ws.mkdir(parents=True, exist_ok=True)
+
+        # ── Translate ────────────────────────────────────
+        progress(15, "Translating script with LLM...")
+        translated = tr.translate_script(api_key, en_script, target_lang, on_log=log)
+        (ws / "script.txt").write_text(translated, encoding="utf-8")
+
+        # ── Translate metadata ───────────────────────────
+        progress(30, "Translating title + description...")
+        en_meta_path = src_workspace / "metadata.json"
+        en_meta = json.loads(en_meta_path.read_text()) if en_meta_path.exists() else {}
+        meta_translated = tr.translate_metadata(
+            api_key,
+            en_meta.get("title", src_stem),
+            en_meta.get("description", ""),
+            target_lang, on_log=log,
+        )
+
+        # ── Voice in target language ─────────────────────
+        progress(45, f"Generating {tr.language_name(target_lang)} voiceover...")
+        voice = tr.voice_for(target_lang)
+        vo_path = ws / "voiceover.mp3"
+        tr.synthesize_voice(translated, voice, vo_path)
+
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(vo_path)],
+            capture_output=True, text=True,
+        )
+        duration = float(r.stdout.strip())
+        log(f"   ✅ {duration:.1f}s in {voice}")
+
+        # ── Captions in target language ──────────────────
+        captions_ass = None
+        try:
+            from engines import captions as cap_engine
+            if cap_engine.is_available():
+                progress(58, "Captioning translated voice...")
+                cap_result = cap_engine.build(
+                    vo_path, ws,
+                    model_name=cfg.get("caption_model", "base.en"),
+                    style="long",
+                    on_log=log,
+                )
+                captions_ass = cap_result["ass"]
+                shutil.copyfile(cap_result["srt"],
+                                OUTPUT_DIR / f"{out_stem}.srt")
+            else:
+                log("   ⚠️  faster-whisper not installed — skipping caption burn-in")
+        except Exception as e:
+            log(f"   ⚠️  caption build failed: {e}")
+
+        # ── Adjust footage to new voice duration ─────────
+        # If translated voice is longer or shorter than original, retime
+        # the footage track. Easiest approach: stream-loop + -t.
+        progress(70, "Aligning footage to new voiceover...")
+        retimed = ws / "footage_retimed.mp4"
+        subprocess.run([
+            "ffmpeg", "-y", "-stream_loop", "-1", "-i", str(footage_track),
+            "-t", f"{duration:.3f}", "-c", "copy", str(retimed),
+        ], capture_output=True)
+        if not retimed.exists():
+            # Fallback to re-encode if stream copy fails
+            subprocess.run([
+                "ffmpeg", "-y", "-stream_loop", "-1", "-i", str(footage_track),
+                "-t", f"{duration:.3f}",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-pix_fmt", "yuv420p",
+                str(retimed),
+            ], capture_output=True)
+
+        # Copy captions.ass into ws so the subtitles filter can read it
+        # via cwd=ws relative path.
+        if captions_ass:
+            shutil.copyfile(captions_ass, ws / "captions.ass")
+
+        # ── Final assembly with audio polish + ducking ──
+        progress(80, "Rendering translated video...")
+        final_mp4 = OUTPUT_DIR / f"{out_stem}.mp4"
+        music_path = None
+        tracks = list(MUSIC_DIR.glob("*.mp3")) + list(MUSIC_DIR.glob("*.wav"))
+        if tracks:
+            music_path = random.choice(tracks)
+
+        music_vol    = cfg.get("music_volume", 0.12)
+        audio_polish = cfg.get("audio_polish", True)
+        duck_ratio   = max(2.0, min(20.0, float(cfg.get("ducking_db", 8.0))))
+        sub_chain    = "subtitles=captions.ass," if captions_ass else ""
+
+        filter_parts = []
+        if sub_chain:
+            filter_parts.append(f"[0:v]{sub_chain[:-1]}[v]")
+            video_map = ["-map", "[v]"]
+        else:
+            video_map = ["-map", "0:v"]
+
+        if music_path:
+            audio_in = ["-i", str(vo_path), "-i", str(music_path)]
+            if audio_polish:
+                filter_parts.append(
+                    f"[1:a]loudnorm=I=-16:TP=-1.5:LRA=11,asplit=2[voice][voice_sc];"
+                    f"[2:a]aloop=loop=-1:size=2e+09,volume={music_vol}[m_raw];"
+                    f"[m_raw][voice_sc]sidechaincompress="
+                    f"threshold=0.05:ratio={duck_ratio:.1f}:attack=20:release=400[m_ducked];"
+                    f"[voice][m_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]"
+                )
+            else:
+                filter_parts.append(
+                    f"[2:a]aloop=loop=-1:size=2e+09,volume={music_vol}[m];"
+                    f"[1:a][m]amix=inputs=2:duration=first:dropout_transition=3[aout]"
+                )
+            audio_map = ["-map", "[aout]"]
+        else:
+            audio_in = ["-i", str(vo_path)]
+            if audio_polish:
+                filter_parts.append("[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[aout]")
+                audio_map = ["-map", "[aout]"]
+            else:
+                audio_map = ["-map", "1:a"]
+
+        cmd = ["ffmpeg", "-y", "-i", str(retimed), *audio_in]
+        if filter_parts:
+            cmd += ["-filter_complex", ";".join(filter_parts)]
+        cmd += [
+            "-t", f"{duration:.3f}",
+            *video_map, *audio_map,
+            "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart", "-pix_fmt", "yuv420p",
+            str(final_mp4),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ws))
+        if result.returncode != 0:
+            raise RuntimeError(f"FFmpeg failed:\n{result.stderr[-1500:]}")
+
+        # ── Translated thumbnail (use English thumb if AI fails) ─
+        progress(92, "Generating translated thumbnail...")
+        thumb = OUTPUT_DIR / f"{out_stem}_thumbnail.jpg"
+        try:
+            from engines import thumbnail as thumb_engine
+            thumb_engine.generate(api_key, meta_translated["title"], thumb,
+                                  on_log=log)
+        except Exception as e:
+            # Fall back: copy the English thumbnail
+            log(f"   ⚠️  translated thumbnail failed: {e} — reusing English")
+            en_thumb = OUTPUT_DIR / f"{src_stem}_thumbnail.jpg"
+            if en_thumb.exists():
+                shutil.copyfile(en_thumb, thumb)
+
+        # ── Save metadata + persist ──────────────────────
+        meta = {
+            "title":       meta_translated["title"],
+            "description": meta_translated["description"],
+            "tags":        list(dict.fromkeys(
+                meta_translated["tags"] + en_meta.get("tags", [])[:5])),
+            "category":    en_meta.get("category", "27"),
+            "duration_s":  round(duration),
+            "language":    target_lang,
+            "translated_from": src_stem,
+        }
+        (ws / "metadata.json").write_text(json.dumps(meta, indent=2,
+                                                     ensure_ascii=False))
+        (ws / "description.txt").write_text(meta["description"])
+
+        mb = final_mp4.stat().st_size / 1024 / 1024
+        m, s = int(duration // 60), int(duration % 60)
+        job["result"] = {
+            "video":       final_mp4.name,
+            "thumbnail":   thumb.name,
+            "description": meta["description"],
+            "tags":        meta["tags"],
+            "duration":    f"{m}:{s:02d}",
+            "size_mb":     round(mb, 1),
+            "job_name":    out_stem,
+            "language":    target_lang,
+        }
+        progress(100, f"{tr.language_name(target_lang)} version ready! 🎬")
+        job["status"] = "done"
+        try:
+            jobs_db.upsert_job(
+                job_id, status="done", progress=100, stage="Complete!",
+                finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                result=job["result"], duration_s=int(round(duration)),
+            )
+        except Exception:
+            pass
+
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc())
+        try:
+            jobs_db.upsert_job(
+                job_id, status="error", error=str(e),
+                finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+            jobs_db.append_log(job_id, f"❌ ERROR: {e}")
+        except Exception:
+            pass
+
+
+@app.route("/api/translate-video", methods=["POST"])
+def translate_video():
+    data = request.json or {}
+    video    = (data.get("video") or "").strip()
+    lang     = (data.get("lang")  or "").strip()
+    if not video or not lang:
+        return jsonify({"error": "video and lang required"}), 400
+
+    from engines import translate as tr
+    if lang not in tr.LANGUAGES:
+        return jsonify({"error": f"unsupported language: {lang}"}), 400
+
+    cfg = load_config()
+    if not cfg.get("openrouter_api_key", "").strip():
+        return jsonify({"error": "OpenRouter key missing"}), 400
+
+    for jid, j in jobs.items():
+        if j["status"] == "running":
+            return jsonify({"error": "A render is already running."}), 409
+
+    job_id = "tr_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    jobs[job_id] = {
+        "status": "running", "progress": 0, "stage": "Starting translation...",
+        "log": [], "result": None, "error": None, "duration": None,
+    }
+    threading.Thread(target=_run_translation_thread,
+                     args=(job_id, video, lang, cfg), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
 @app.route("/api/jobs/list", methods=["GET"])
 def jobs_list_endpoint():
     from engines import jobs as jobs_db

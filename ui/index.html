@@ -1362,6 +1362,28 @@ A 15-minute video needs ~2160 words."
 <!-- TOAST CONTAINER -->
 <div id="toast-container"></div>
 
+<!-- TRANSLATE MODAL -->
+<div class="modal-backdrop" id="translate-modal">
+  <div class="modal">
+    <h3>Translate video</h3>
+    <p style="font-size:12px;color:var(--text-dim);margin-top:-6px;margin-bottom:14px">
+      Reuses the original footage track. Re-renders in ~3–5 minutes per language.
+    </p>
+    <div class="form-group">
+      <label class="form-label">Source video</label>
+      <div id="trans-src" style="font-size:12px;color:var(--text)"></div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Target language</label>
+      <select class="form-select" id="trans-lang"></select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('translate-modal')">Cancel</button>
+      <button class="btn btn-gold" onclick="startTranslation()">Translate</button>
+    </div>
+  </div>
+</div>
+
 <!-- DESCRIPTION MODAL -->
 <div class="modal-backdrop" id="desc-modal">
   <div class="modal">
@@ -1746,6 +1768,7 @@ async function loadOutputs() {
           </a>
           ${v.thumbnail ? `<a href="/api/outputs/thumbnail/${v.thumbnail}" class="btn btn-ghost btn-sm" download>🖼️</a>` : ''}
           <button class="btn btn-gold btn-sm" onclick="ytUploadVideo('${v.name}')" title="Upload to YouTube">▶ YT</button>
+          <button class="btn btn-ghost btn-sm" onclick="openTranslateModal('${v.name}')" title="Translate to another language">🌐</button>
           <button class="btn btn-danger btn-sm" onclick="deleteOutput('${v.name}')">🗑️</button>
         </div>
       </div>
@@ -2438,6 +2461,54 @@ async function produceIdea(id) {
   // Switch to Generate page so the user can watch progress
   showPage('generate');
   loadIdeas();
+}
+
+/* ════════════════════════════════════════════════════════
+   TRANSLATE
+════════════════════════════════════════════════════════ */
+let _translateLanguages = null;
+
+async function openTranslateModal(filename) {
+  if (!_translateLanguages) {
+    try {
+      const r = await fetch('/api/translate/languages');
+      _translateLanguages = await r.json();
+    } catch (e) {
+      toast('Could not load languages.', 'error'); return;
+    }
+  }
+  document.getElementById('trans-src').textContent = filename;
+  const sel = document.getElementById('trans-lang');
+  sel.innerHTML = _translateLanguages.map(l =>
+    `<option value="${l.code}">${l.name} (${l.voice})</option>`
+  ).join('');
+  sel.dataset.video = filename;
+  document.getElementById('translate-modal').classList.add('open');
+}
+
+async function startTranslation() {
+  const sel = document.getElementById('trans-lang');
+  const video = sel.dataset.video;
+  const lang  = sel.value;
+  if (!video || !lang) return;
+
+  const r = await fetch('/api/translate-video', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ video, lang }),
+  });
+  const d = await r.json();
+  if (!r.ok) { toast(d.error || 'failed to start', 'error'); return; }
+
+  closeModal('translate-modal');
+  toast('Translation started — see Generate page progress.', 'ok');
+
+  // Reuse the existing pipeline status poll.
+  currentJobId = d.job_id;
+  document.getElementById('result-card').classList.remove('open');
+  document.getElementById('progress-card')?.classList.add('active');
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(pollStatus, 2000);
+  showPage('generate');
 }
 
 /* ════════════════════════════════════════════════════════
