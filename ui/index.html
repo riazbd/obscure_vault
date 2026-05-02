@@ -1187,6 +1187,27 @@ A 15-minute video needs ~2160 words."
           <pre id="yt-log" style="display:none;max-height:160px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:10px;font-size:11px;color:var(--text-dim);margin-top:8px;white-space:pre-wrap"></pre>
         </div>
 
+        <!-- Branding (intro/outro stings) -->
+        <div class="card">
+          <div class="card-title">Channel branding (intro / outro stings)</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+            Drop short MP4s here and every rendered video gets your intro
+            pre-pended and your outro appended. Files are auto-normalised to
+            the canvas spec on upload, so concat is fast and lossless.
+          </p>
+          <div class="form-group">
+            <label class="form-label" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+              <input type="checkbox" id="apply-branding" style="width:18px;height:18px;accent-color:var(--gold)">
+              <span>Apply branding to every render</span>
+            </label>
+          </div>
+          <div id="branding-slots" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px"></div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:8px">
+            Long slots: 1920×1080. Short slots: 1080×1920. Sources at any aspect get scaled+padded with letterbox.
+            Recommended length: 2–4 seconds.
+          </div>
+        </div>
+
         <!-- Smart B-roll -->
         <div class="card">
           <div class="card-title">Smart B-roll (semantic per-chunk footage)</div>
@@ -1864,6 +1885,84 @@ async function generateScriptWithAI() {
 }
 
 /* ════════════════════════════════════════════════════════
+   BRANDING
+════════════════════════════════════════════════════════ */
+const BRANDING_LABELS = {
+  long_intro:  "Long-form intro (1920×1080)",
+  long_outro:  "Long-form outro (1920×1080)",
+  short_intro: "Short intro (1080×1920)",
+  short_outro: "Short outro (1080×1920)",
+};
+
+async function loadBrandingSlots() {
+  const box = document.getElementById('branding-slots');
+  if (!box) return;
+  let d = {};
+  try {
+    const r = await fetch('/api/branding/list');
+    d = await r.json();
+  } catch (e) { return; }
+
+  box.innerHTML = Object.keys(BRANDING_LABELS).map(slot => {
+    const v = d[slot];
+    const exists = !!v;
+    const dur = exists && v.duration ? v.duration.toFixed(1) + 's' : '';
+    return `
+      <div style="border:1px solid #222;border-radius:6px;padding:10px;background:#0d0d0d">
+        <div style="font-size:12px;color:var(--text);margin-bottom:6px">${BRANDING_LABELS[slot]}</div>
+        ${exists ? `
+          <video src="/api/branding/preview/${slot}?t=${Date.now()}" controls muted
+                 style="width:100%;border-radius:4px;background:#000;display:block;max-height:140px;margin-bottom:6px"></video>
+          <div style="font-size:11px;color:var(--text-dim);display:flex;justify-content:space-between">
+            <span>${dur} · ${(v.size_kb).toLocaleString()} KB</span>
+            <button class="btn btn-danger btn-sm" onclick="deleteBranding('${slot}')">Remove</button>
+          </div>
+        ` : `
+          <input type="file" accept="video/mp4,video/quicktime,video/x-matroska,video/webm"
+                 id="brand-${slot}-file" style="display:none"
+                 onchange="uploadBranding('${slot}', this.files[0])">
+          <button class="btn btn-ghost btn-sm" style="width:100%"
+                  onclick="document.getElementById('brand-${slot}-file').click()">
+            Upload MP4
+          </button>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:6px">No file yet.</div>
+        `}
+      </div>`;
+  }).join('');
+}
+
+async function uploadBranding(slot, file) {
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('slot', slot);
+  fd.append('file', file);
+  toast('Uploading + normalising...', 'info');
+  const r = await fetch('/api/branding/upload', { method: 'POST', body: fd });
+  const d = await r.json();
+  if (!r.ok) { toast(d.error || 'failed', 'error'); return; }
+
+  const poll = setInterval(async () => {
+    const sr = await fetch('/api/branding/upload-status/' + d.job_id);
+    const sd = await sr.json();
+    if (sd.status === 'done') {
+      clearInterval(poll);
+      toast('Branding clip ready.', 'ok');
+      loadBrandingSlots();
+    } else if (sd.status === 'error') {
+      clearInterval(poll);
+      toast('Normalize failed: ' + (sd.error || ''), 'error');
+    }
+  }, 1500);
+}
+
+async function deleteBranding(slot) {
+  if (!confirm('Remove this branding clip?')) return;
+  await fetch('/api/branding/' + slot, { method: 'DELETE' });
+  toast('Removed.', 'info');
+  loadBrandingSlots();
+}
+
+/* ════════════════════════════════════════════════════════
    DASHBOARD
 ════════════════════════════════════════════════════════ */
 async function loadDashboard() {
@@ -2456,6 +2555,8 @@ async function loadSettings() {
   document.getElementById('audio-polish').checked  = d.audio_polish !== false;
   document.getElementById('ducking-db').value      = d.ducking_db ?? 8;
   document.getElementById('duck-val').textContent  = (d.ducking_db ?? 8) + ' dB';
+  document.getElementById('apply-branding').checked = d.apply_branding !== false;
+  loadBrandingSlots();
   refreshYTStatus();
   refreshCaptionInstallStatus();
   loadScheduler();
@@ -2575,6 +2676,7 @@ async function saveSettings() {
     motion_effect:      document.getElementById('motion-effect').value,
     audio_polish:       document.getElementById('audio-polish').checked,
     ducking_db:         parseFloat(document.getElementById('ducking-db').value) || 8,
+    apply_branding:     document.getElementById('apply-branding').checked,
   };
   await fetch('/api/config', {
     method: 'POST', headers: {'Content-Type':'application/json'},

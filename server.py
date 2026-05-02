@@ -60,6 +60,7 @@ def load_config():
         "motion_effect": "pan",
         "audio_polish": True,
         "ducking_db": 8.0,
+        "apply_branding": True,
     }
 
 def save_config(data):
@@ -450,6 +451,21 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
                                 cwd=str(workspace))
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg assembly failed:\n{result.stderr[-2000:]}")
+
+        # ── Step 5b: Optional branding (intro / outro) ──
+        if cfg.get("apply_branding", True):
+            try:
+                from engines import branding
+                if branding.has_slot("long_intro") or branding.has_slot("long_outro"):
+                    progress(83, "Adding intro / outro stings...")
+                    unbranded = workspace / "main_unbranded.mp4"
+                    final_mp4.rename(unbranded)
+                    branding.apply_for_video_kind(
+                        unbranded, final_mp4,
+                        kind="long", width=W, height=H, on_log=log,
+                    )
+            except Exception as e:
+                log(f"⚠️  branding failed (video saved without it): {e}")
 
         mb = final_mp4.stat().st_size / 1024 / 1024
         log(f"✅ Video: {final_mp4.name} ({mb:.1f} MB)")
@@ -934,6 +950,21 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
                                 cwd=str(workspace))
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg failed:\n{result.stderr[-1500:]}")
+
+        # Optional Shorts branding (separate vertical slots)
+        if cfg.get("apply_branding", True):
+            try:
+                from engines import branding
+                if branding.has_slot("short_intro") or branding.has_slot("short_outro"):
+                    progress(83, "Adding Shorts intro / outro...")
+                    unbranded = workspace / "main_unbranded.mp4"
+                    final_mp4.rename(unbranded)
+                    branding.apply_for_video_kind(
+                        unbranded, final_mp4,
+                        kind="short", width=W, height=H, on_log=log,
+                    )
+            except Exception as e:
+                log(f"⚠️  Shorts branding failed: {e}")
 
         # ── Step 6: Vertical thumbnail ───────────────────
         progress(88, "Generating vertical thumbnail...")
@@ -1852,6 +1883,91 @@ def _scheduler_runtime():
         "pipeline_jobs": lambda: jobs,
         "produce_idea":  _scheduler_produce_idea,
     }
+
+
+# ════════════════════════════════════════════════════════
+#  Branding (intro / outro stings)
+# ════════════════════════════════════════════════════════
+
+BRANDING_UPLOADS = BASE_DIR / "data" / "branding" / "_uploads"
+BRANDING_UPLOADS.mkdir(parents=True, exist_ok=True)
+brand_jobs = {}
+
+
+@app.route("/api/branding/list", methods=["GET"])
+def branding_list():
+    from engines import branding
+    return jsonify(branding.list_slots())
+
+
+def _run_branding_normalize(job_id: str, src_path: Path, slot: str):
+    from engines import branding
+    job = brand_jobs[job_id]
+    try:
+        branding.normalize_clip(src_path, slot)
+        try:
+            src_path.unlink()
+        except Exception:
+            pass
+        job["status"] = "done"
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/branding/upload", methods=["POST"])
+def branding_upload():
+    from engines import branding
+    slot = request.form.get("slot", "")
+    if slot not in branding.VALID_SLOTS:
+        return jsonify({"error": "bad slot"}), 400
+    if "file" not in request.files:
+        return jsonify({"error": "no file"}), 400
+    f = request.files["file"]
+    if not f.filename.lower().endswith((".mp4", ".mov", ".mkv", ".webm", ".m4v")):
+        return jsonify({"error": "needs to be mp4/mov/mkv/webm/m4v"}), 400
+
+    tmp = BRANDING_UPLOADS / f"upload_{slot}_{int(datetime.now().timestamp())}{Path(f.filename).suffix}"
+    f.save(str(tmp))
+
+    job_id = "br_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    brand_jobs[job_id] = {"status": "running", "log": [], "error": None}
+    threading.Thread(target=_run_branding_normalize,
+                     args=(job_id, tmp, slot), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/branding/upload-status/<job_id>")
+def branding_upload_status(job_id):
+    job = brand_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "error":  job["error"],
+    })
+
+
+@app.route("/api/branding/<slot>", methods=["DELETE"])
+def branding_delete(slot):
+    from engines import branding
+    if slot not in branding.VALID_SLOTS:
+        return jsonify({"error": "bad slot"}), 400
+    branding.delete_slot(slot)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/branding/preview/<slot>")
+def branding_preview(slot):
+    from engines import branding
+    if slot not in branding.VALID_SLOTS:
+        return jsonify({"error": "bad slot"}), 400
+    p = branding.slot_path(slot)
+    if not p.exists():
+        return jsonify({"error": "not found"}), 404
+    return send_file(str(p), mimetype="video/mp4")
 
 
 @app.route("/api/dashboard", methods=["GET"])
