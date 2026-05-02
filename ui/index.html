@@ -1217,6 +1217,21 @@ A 15-minute video needs ~2160 words."
           <pre id="yt-log" style="display:none;max-height:160px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:10px;font-size:11px;color:var(--text-dim);margin-top:8px;white-space:pre-wrap"></pre>
         </div>
 
+        <!-- Auto-translate languages -->
+        <div class="card">
+          <div class="card-title">Auto-translate languages</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+            After every long-form render finishes, the pipeline will automatically
+            queue translations into the languages you tick here — reusing the
+            cached footage track, so each variant takes ~3–5 minutes. Uploads to
+            YouTube too, if auto-upload is on. Tick none to disable.
+          </p>
+          <div id="auto-langs-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px"></div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:8px">
+            Per-language renders run sequentially after the main video — they don't slow down the original render.
+          </div>
+        </div>
+
         <!-- Branding (intro/outro stings) -->
         <div class="card">
           <div class="card-title">Channel branding (intro / outro stings)</div>
@@ -2476,6 +2491,34 @@ async function produceIdea(id) {
 }
 
 /* ════════════════════════════════════════════════════════
+   AUTO-TRANSLATE LANGUAGE PICKER
+════════════════════════════════════════════════════════ */
+async function loadAutoLangs(selected) {
+  const grid = document.getElementById('auto-langs-grid');
+  if (!grid) return;
+  if (!_translateLanguages) {
+    try {
+      const r = await fetch('/api/translate/languages');
+      _translateLanguages = await r.json();
+    } catch (e) { return; }
+  }
+  const sel = new Set(selected || []);
+  grid.innerHTML = _translateLanguages.map(l => `
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:4px 6px;border-radius:4px;background:#0d0d0d;border:1px solid #1a1a1a">
+      <input type="checkbox" data-lang="${l.code}" ${sel.has(l.code) ? 'checked' : ''}
+             style="width:16px;height:16px;accent-color:var(--gold)">
+      <span style="flex:1">${escapeHTML(l.name)}</span>
+      <span style="color:var(--text-dim);font-size:10px">${escapeHTML(l.code)}</span>
+    </label>
+  `).join('');
+}
+
+function collectAutoLangs() {
+  const boxes = document.querySelectorAll('#auto-langs-grid input[type="checkbox"]');
+  return Array.from(boxes).filter(b => b.checked).map(b => b.dataset.lang);
+}
+
+/* ════════════════════════════════════════════════════════
    REVIEW
 ════════════════════════════════════════════════════════ */
 let _reviewPoll = null;
@@ -2855,6 +2898,7 @@ async function loadSettings() {
   document.getElementById('duck-val').textContent  = (d.ducking_db ?? 8) + ' dB';
   document.getElementById('apply-branding').checked = d.apply_branding !== false;
   loadBrandingSlots();
+  loadAutoLangs(d.auto_translate_languages || []);
   refreshYTStatus();
   refreshCaptionInstallStatus();
   loadScheduler();
@@ -2975,6 +3019,7 @@ async function saveSettings() {
     audio_polish:       document.getElementById('audio-polish').checked,
     ducking_db:         parseFloat(document.getElementById('ducking-db').value) || 8,
     apply_branding:     document.getElementById('apply-branding').checked,
+    auto_translate_languages: collectAutoLangs(),
   };
   await fetch('/api/config', {
     method: 'POST', headers: {'Content-Type':'application/json'},
