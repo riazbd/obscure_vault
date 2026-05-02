@@ -557,6 +557,10 @@ input[type="range"]::-webkit-slider-thumb {
         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
         Dashboard
       </a>
+      <a class="nav-item" data-page="jobs" onclick="showPage('jobs')">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+        Jobs
+      </a>
       <a class="nav-item active" data-page="setup" onclick="showPage('setup')">
         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
         Setup
@@ -594,6 +598,32 @@ input[type="range"]::-webkit-slider-thumb {
     <!-- ══════════════════════════════════════
          SETUP PAGE
     ══════════════════════════════════════ -->
+    <div id="page-jobs" class="page">
+      <div class="page-header">
+        <h2>Jobs</h2>
+        <p>Every video-pipeline run, persisted to SQLite. Survives server restart. Click any row to see its log.</p>
+      </div>
+      <div style="padding:24px 36px">
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+          <select class="form-select" id="jobs-filter-status" style="max-width:160px" onchange="loadJobs()">
+            <option value="">All statuses</option>
+            <option value="running">Running</option>
+            <option value="done">Done</option>
+            <option value="error">Error</option>
+          </select>
+          <select class="form-select" id="jobs-filter-kind" style="max-width:160px" onchange="loadJobs()">
+            <option value="">Any kind</option>
+            <option value="long">Long-form</option>
+            <option value="short">Short</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="loadJobs()">↻ Refresh</button>
+          <span style="flex:1"></span>
+          <button class="btn btn-ghost btn-sm" onclick="cleanupJobs()" title="Trim DB to most recent 200">🗑️ Cleanup</button>
+        </div>
+        <div id="jobs-list"></div>
+      </div>
+    </div>
+
     <div id="page-dashboard" class="page">
       <div class="page-header">
         <h2>Dashboard</h2>
@@ -1362,6 +1392,7 @@ function showPage(id) {
   document.getElementById('page-' + id).classList.add('active');
   document.querySelector(`[data-page="${id}"]`).classList.add('active');
 
+  if (id === 'jobs')      loadJobs();
   if (id === 'dashboard') loadDashboard();
   if (id === 'ideas')   loadIdeas();
   if (id === 'outputs') loadOutputs();
@@ -1882,6 +1913,97 @@ async function generateScriptWithAI() {
       stat.textContent = 'Working... (' + ((sd.log || []).slice(-1)[0] || '') + ')';
     }
   }, 1500);
+}
+
+/* ════════════════════════════════════════════════════════
+   JOBS (persistent)
+════════════════════════════════════════════════════════ */
+async function loadJobs() {
+  const list = document.getElementById('jobs-list');
+  if (!list) return;
+  const status = document.getElementById('jobs-filter-status').value;
+  const kind   = document.getElementById('jobs-filter-kind').value;
+  const params = new URLSearchParams();
+  if (status) params.set('status', status);
+  if (kind)   params.set('kind',   kind);
+  params.set('limit', '100');
+  list.innerHTML = '<div style="color:var(--text-dim);font-size:13px">Loading...</div>';
+
+  let items = [];
+  try {
+    const r = await fetch('/api/jobs/list?' + params.toString());
+    items = await r.json();
+  } catch (e) {
+    list.innerHTML = '<div style="color:var(--text-dim)">Failed to load.</div>';
+    return;
+  }
+
+  if (!items.length) {
+    list.innerHTML = '<div class="empty-state"><p>No jobs in this filter yet.</p></div>';
+    return;
+  }
+
+  list.innerHTML = items.map(j => {
+    const when = (j.started_at || '').replace('T', ' ').slice(0, 16);
+    const ttl  = (j.title || '').replace(/[<>]/g, '');
+    const dur  = j.duration_s ? ` · ${j.duration_s}s` : '';
+    const sb   = j.status === 'done'    ? `<span class="badge badge-ok">done</span>`
+              : j.status === 'error'   ? `<span class="badge badge-error">error</span>`
+              : j.status === 'running' ? `<span class="badge" style="background:#3a3a00;color:#e6a23a">running ${j.progress||0}%</span>`
+              : `<span class="badge" style="background:#222;color:var(--text-dim)">${j.status||'?'}</span>`;
+    return `
+      <div class="card" style="margin-bottom:8px;cursor:pointer" onclick="toggleJobDetail('${j.id}')">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600">${escapeHTML(ttl)}</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:4px">
+              ${j.kind || '?'} · ${when}${dur} · id: ${j.id}
+              ${j.error ? ` · <span style="color:#e6a23a">${escapeHTML(j.error.slice(0, 90))}</span>` : ''}
+              ${j.stage && j.status === 'running' ? ` · ${escapeHTML(j.stage)}` : ''}
+            </div>
+          </div>
+          ${sb}
+        </div>
+        <div id="jdetail-${j.id}" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid #222"></div>
+      </div>`;
+  }).join('');
+}
+
+async function toggleJobDetail(id) {
+  const el = document.getElementById('jdetail-' + id);
+  if (!el) return;
+  if (el.style.display === 'block') { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.innerHTML = '<div style="color:var(--text-dim);font-size:12px">Loading...</div>';
+
+  let j = {};
+  try {
+    const r = await fetch('/api/jobs/' + id);
+    j = await r.json();
+  } catch (e) {
+    el.innerHTML = '<div style="color:var(--text-dim)">Failed to load detail.</div>';
+    return;
+  }
+
+  const log = j.log || '';
+  const result = j.result ? `<pre style="background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:8px;font-size:11px;color:var(--text);overflow-x:auto;white-space:pre-wrap">${escapeHTML(JSON.stringify(j.result, null, 2))}</pre>` : '';
+  el.innerHTML = `
+    ${result}
+    <details ${log ? 'open' : ''} style="margin-top:8px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--text-dim)">Log (${log.split('\\n').length} lines)</summary>
+      <pre style="max-height:300px;overflow:auto;background:#0a0a0a;border:1px solid #222;border-radius:6px;padding:8px;font-size:11px;color:var(--text-dim);margin-top:6px;white-space:pre-wrap">${escapeHTML(log)}</pre>
+    </details>`;
+}
+
+async function cleanupJobs() {
+  if (!confirm('Trim job history to the most recent 200 entries?')) return;
+  const r = await fetch('/api/jobs/cleanup', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ keep_recent: 200 }),
+  });
+  const d = await r.json();
+  toast(`Removed ${d.deleted || 0} old job records.`, 'ok');
+  loadJobs();
 }
 
 /* ════════════════════════════════════════════════════════

@@ -15,7 +15,7 @@ import threading
 import random
 import platform
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify, send_from_directory, send_file
 
 app = Flask(__name__, static_folder="ui")
@@ -115,16 +115,29 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
     import requests as req_lib
     from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
     import edge_tts
+    from engines import jobs as jobs_db
 
     job = jobs[job_id]
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    jobs_db.upsert_job(job_id, kind="long", title=title, status="running",
+                       progress=0, stage="Starting...", started_at=started)
 
     def log(msg):
         job["log"].append(msg)
+        try:
+            jobs_db.append_log(job_id, msg)
+        except Exception:
+            pass
         print(f"[{job_id}] {msg}")
 
     def progress(pct, stage):
         job["progress"] = pct
         job["stage"] = stage
+        try:
+            jobs_db.upsert_job(job_id, status="running",
+                               progress=pct, stage=stage)
+        except Exception:
+            pass
         log(f"[{pct}%] {stage}")
 
     try:
@@ -657,6 +670,16 @@ TIMESTAMPS
         }
         progress(100, "Complete! 🎬")
         job["status"] = "done"
+        try:
+            jobs_db.upsert_job(
+                job_id, status="done", progress=100,
+                stage="Complete!",
+                finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                result=job["result"],
+                duration_s=int(round(duration)),
+            )
+        except Exception:
+            pass
 
     except Exception as e:
         import traceback
@@ -664,6 +687,14 @@ TIMESTAMPS
         job["error"]  = str(e)
         job["log"].append(f"❌ ERROR: {e}")
         job["log"].append(traceback.format_exc())
+        try:
+            jobs_db.upsert_job(
+                job_id, status="error", error=str(e),
+                finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+            jobs_db.append_log(job_id, f"❌ ERROR: {e}")
+        except Exception:
+            pass
 
 
 # ════════════════════════════════════════════════════════
@@ -809,16 +840,30 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
     import requests as req_lib
     from PIL import Image
     import edge_tts
+    from engines import jobs as jobs_db
 
     job = jobs[job_id]
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    jobs_db.upsert_job(job_id, kind="short", title=idea[:140],
+                       status="running", progress=0,
+                       stage="Starting Short...", started_at=started)
 
     def log(msg):
         job["log"].append(msg)
+        try:
+            jobs_db.append_log(job_id, msg)
+        except Exception:
+            pass
         print(f"[{job_id}] {msg}")
 
     def progress(pct, stage):
         job["progress"] = pct
         job["stage"] = stage
+        try:
+            jobs_db.upsert_job(job_id, status="running",
+                               progress=pct, stage=stage)
+        except Exception:
+            pass
         log(f"[{pct}%] {stage}")
 
     try:
@@ -1029,6 +1074,15 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
         }
         progress(100, "Short ready! 🎬")
         job["status"] = "done"
+        try:
+            jobs_db.upsert_job(
+                job_id, status="done", progress=100, stage="Short ready!",
+                finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                result=job["result"],
+                duration_s=int(round(duration)),
+            )
+        except Exception:
+            pass
 
     except Exception as e:
         import traceback
@@ -1036,6 +1090,14 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
         job["error"]  = str(e)
         job["log"].append(f"❌ {e}")
         job["log"].append(traceback.format_exc())
+        try:
+            jobs_db.upsert_job(
+                job_id, status="error", error=str(e),
+                finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+            jobs_db.append_log(job_id, f"❌ ERROR: {e}")
+        except Exception:
+            pass
 
 
 @app.route("/api/run-short", methods=["POST"])
@@ -1970,6 +2032,36 @@ def branding_preview(slot):
     return send_file(str(p), mimetype="video/mp4")
 
 
+# ════════════════════════════════════════════════════════
+#  Jobs (persistent)
+# ════════════════════════════════════════════════════════
+
+@app.route("/api/jobs/list", methods=["GET"])
+def jobs_list_endpoint():
+    from engines import jobs as jobs_db
+    status = request.args.get("status") or None
+    kind   = request.args.get("kind")   or None
+    limit  = min(int(request.args.get("limit", 100)), 500)
+    return jsonify(jobs_db.list_jobs(status=status, kind=kind, limit=limit))
+
+
+@app.route("/api/jobs/<job_id>", methods=["GET"])
+def jobs_get_endpoint(job_id):
+    from engines import jobs as jobs_db
+    item = jobs_db.get_job(job_id)
+    if not item:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(item)
+
+
+@app.route("/api/jobs/cleanup", methods=["POST"])
+def jobs_cleanup_endpoint():
+    from engines import jobs as jobs_db
+    keep = int((request.json or {}).get("keep_recent", 200))
+    deleted = jobs_db.delete_old(keep_recent=keep)
+    return jsonify({"deleted": deleted})
+
+
 @app.route("/api/dashboard", methods=["GET"])
 def dashboard():
     from engines import analytics, ideas as I, scheduler as sched
@@ -2056,6 +2148,8 @@ def scheduler_trigger(task_name):
 if __name__ == "__main__":
     import webbrowser
     from engines import scheduler as sched
+    from engines import jobs as jobs_db
+    jobs_db.mark_orphans_failed()
     sched.start(load_config, _scheduler_runtime())
     print("\n" + "═"*55)
     print("  OBSCURA VAULT — Starting UI Server")
