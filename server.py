@@ -61,7 +61,6 @@ def load_config():
         "audio_polish": True,
         "ducking_db": 8.0,
         "apply_branding": True,
-        "auto_translate_languages": [],
     }
 
 def save_config(data):
@@ -658,19 +657,6 @@ TIMESTAMPS
             except Exception as e:
                 log(f"⚠️  auto-upload failed (video still saved locally): {e}")
 
-        # ── Bulk auto-translate (if configured) ──────────
-        auto_langs = [
-            l for l in (cfg.get("auto_translate_languages") or [])
-            if isinstance(l, str) and l.strip()
-        ]
-        if auto_langs:
-            log(f"🌐 queuing auto-translation for {len(auto_langs)} language(s): {', '.join(auto_langs)}")
-            threading.Thread(
-                target=_run_batch_translation,
-                args=(final_mp4.name, auto_langs, cfg),
-                daemon=True,
-            ).start()
-
         # ── Done ─────────────────────────────────────────
         job["result"] = {
             "video":       final_mp4.name,
@@ -681,7 +667,6 @@ TIMESTAMPS
             "size_mb":     round(mb, 1),
             "job_name":    job_name,
             "youtube":     upload_result,
-            "translations_queued": auto_langs,
         }
         progress(100, "Complete! 🎬")
         job["status"] = "done"
@@ -2062,38 +2047,6 @@ def translate_languages():
         {"code": code, "name": info["name"], "voice": info["voice"]}
         for code, info in tr.LANGUAGES.items()
     ])
-
-
-def _run_batch_translation(video_filename: str, languages: list, cfg: dict):
-    """
-    Sequentially translate `video_filename` into each language. Run in a
-    daemon thread so it never blocks the main render's success return.
-    Each translation gets its own job_id and shows up in /api/jobs.
-    """
-    from engines import translate as tr
-    from engines import jobs as jobs_db
-
-    seen = set()
-    for lang in languages:
-        if not isinstance(lang, str) or lang in seen:
-            continue
-        if lang not in tr.LANGUAGES:
-            continue
-        seen.add(lang)
-
-        # Run sequentially. Each call is synchronous within this thread.
-        job_id = f"trb_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{lang}"
-        jobs[job_id] = {
-            "status": "running", "progress": 0,
-            "stage": f"Auto-translating to {tr.language_name(lang)}...",
-            "log": [], "result": None, "error": None, "duration": None,
-        }
-        try:
-            _run_translation_thread(job_id, video_filename, lang, cfg)
-        except Exception as e:
-            print(f"[batch-translate] {lang}: {e}")
-            jobs_db.upsert_job(job_id, status="error", error=str(e),
-                               finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
 
 def _run_translation_thread(job_id: str, video_filename: str,
