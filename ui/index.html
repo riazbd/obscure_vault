@@ -1099,7 +1099,7 @@ A 15-minute video needs ~2160 words."
         <div class="card">
           <div class="card-title">Narrator Voice</div>
           <div class="form-group">
-            <label class="form-label">Edge TTS Voice</label>
+            <label class="form-label">Default voice (used if rotation pool is empty)</label>
             <select class="form-select" id="tts-voice">
               <option value="en-US-GuyNeural">🇺🇸 Guy — Deep, Authoritative (Recommended)</option>
               <option value="en-US-EricNeural">🇺🇸 Eric — Warm, Measured</option>
@@ -1110,6 +1110,11 @@ A 15-minute video needs ~2160 words."
               <option value="en-US-AndrewNeural">🇺🇸 Andrew — Clear, Crisp</option>
             </select>
             <div class="form-hint">All voices are free via Microsoft Edge TTS. No signup required.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Rotation pool (tick 2+ to rotate randomly per video — fights monotony)</label>
+            <div id="voice-pool" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px"></div>
+            <div class="form-hint">Tick none to always use the default voice above.</div>
           </div>
         </div>
 
@@ -2019,6 +2024,92 @@ async function cleanupJobs() {
 }
 
 /* ════════════════════════════════════════════════════════
+   VOICE ROTATION POOL
+════════════════════════════════════════════════════════ */
+const VOICE_OPTIONS = [
+  ['en-US-GuyNeural',     '🇺🇸 Guy (deep, authoritative)'],
+  ['en-US-EricNeural',    '🇺🇸 Eric (warm, measured)'],
+  ['en-US-DavisNeural',   '🇺🇸 Davis (gravelly, dramatic)'],
+  ['en-GB-RyanNeural',    '🇬🇧 Ryan (British, formal)'],
+  ['en-GB-ThomasNeural',  '🇬🇧 Thomas (British, historical)'],
+  ['en-AU-WilliamNeural', '🇦🇺 William (calm authority)'],
+  ['en-US-AndrewNeural',  '🇺🇸 Andrew (clear, crisp)'],
+];
+
+function renderVoicePool(selected) {
+  const grid = document.getElementById('voice-pool');
+  if (!grid) return;
+  const sel = new Set(selected || []);
+  grid.innerHTML = VOICE_OPTIONS.map(([id, label]) => `
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:5px 7px;border-radius:4px;background:#0d0d0d;border:1px solid #1a1a1a">
+      <input type="checkbox" data-voice="${id}" ${sel.has(id) ? 'checked' : ''}
+             style="width:16px;height:16px;accent-color:var(--gold)">
+      <span>${label}</span>
+    </label>
+  `).join('');
+}
+
+function collectVoicePool() {
+  return Array.from(document.querySelectorAll('#voice-pool input[type="checkbox"]'))
+    .filter(b => b.checked).map(b => b.dataset.voice);
+}
+
+/* ════════════════════════════════════════════════════════
+   STORAGE + CHARTS
+════════════════════════════════════════════════════════ */
+async function runStorageCleanup() {
+  if (!confirm('Clean intermediate workspaces older than 7 days and enforce the output cap?')) return;
+  const r = await fetch('/api/storage/cleanup', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ older_than_days: 7, output_cap_gb: 30 }),
+  });
+  const d = await r.json();
+  toast(`Freed ${(d.workspaces?.freed_mb || 0)} MB · ${(d.workspaces?.workspaces_cleaned || 0)} workspaces · ${(d.output?.deleted || 0)} old MP4s`, 'ok');
+  loadDashboard();
+}
+
+function svgBars(items, opts = {}) {
+  if (!items.length) return '<div style="color:var(--text-dim);font-size:12px">no data</div>';
+  const max = Math.max(1, ...items.map(i => +i.value || 0));
+  const fmt = opts.fmt || (n => n.toLocaleString());
+  return items.map(i => {
+    const pct = ((+i.value || 0) / max) * 100;
+    const c   = i.color || 'var(--gold)';
+    return `
+      <div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:11px">
+        <div style="flex:0 0 38%;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHTML(i.label)}</div>
+        <div style="flex:1;height:14px;background:#1a1a1a;border-radius:3px;position:relative;overflow:hidden">
+          <div style="position:absolute;top:0;left:0;height:100%;width:${pct}%;background:${c}"></div>
+        </div>
+        <div style="flex:0 0 80px;text-align:right;color:var(--text-dim)">${fmt(+i.value || 0)}</div>
+      </div>`;
+  }).join('');
+}
+
+function svgActivityBars(daily) {
+  if (!daily || !daily.length) return '<div style="color:var(--text-dim);font-size:12px">no jobs in window</div>';
+  const max = Math.max(1, ...daily.map(d => (d.done || 0) + (d.error || 0)));
+  const W = 300, H = 70, n = daily.length;
+  const colW = (W - 4) / n - 2;
+  let bars = '';
+  daily.forEach((d, i) => {
+    const total  = (d.done || 0) + (d.error || 0);
+    const x      = 2 + i * (colW + 2);
+    const h      = (total / max) * (H - 12);
+    const doneH  = ((d.done || 0) / max) * (H - 12);
+    const errorH = h - doneH;
+    bars += `<rect x="${x}" y="${H - h}" width="${colW}" height="${doneH}" fill="rgba(206,170,98,0.85)"/>`;
+    if (errorH > 0)
+      bars += `<rect x="${x}" y="${H - h + doneH}" width="${colW}" height="${errorH}" fill="#e6a23a"/>`;
+    bars += `<title>${d.date}: ${d.done || 0} done, ${d.error || 0} errors</title>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:70px;display:block">${bars}</svg>
+    <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-dim);margin-top:2px">
+      <span>${daily[0].date}</span><span>${daily[daily.length-1].date}</span>
+    </div>`;
+}
+
+/* ════════════════════════════════════════════════════════
    BRANDING
 ════════════════════════════════════════════════════════ */
 const BRANDING_LABELS = {
@@ -2134,13 +2225,6 @@ async function loadDashboard() {
     </tr>`;
   }).join('');
 
-  const tokRow = (t, sign) => `
-    <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1a1a1a;font-size:12px">
-      <span style="color:${sign === '+' ? 'var(--gold)' : '#888'}">${sign}${Math.round((t.multiplier - 1) * 100)}%</span>
-      <span style="flex:1;margin-left:10px;color:var(--text)">${escapeHTML(t.token)}</span>
-      <span style="color:var(--text-dim)">×${t.multiplier} · ${t.samples}n</span>
-    </div>`;
-
   const schedRows = Object.entries(d.scheduler || {}).map(([name, t]) => `
     <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1a1a1a;font-size:12px">
       <span>${name}</span>
@@ -2150,6 +2234,30 @@ async function loadDashboard() {
           : 'disabled'}
       </span>
     </div>`).join('');
+
+  // Top/bottom token bars via shared svgBars helper
+  const topBarItems = (d.top_tokens || []).map(t => ({
+    label: `${t.token} · ${t.samples}n`, value: Math.round((t.multiplier - 1) * 100),
+    color: 'var(--gold)',
+  }));
+  const botBarItems = (d.bottom_tokens || []).map(t => ({
+    label: `${t.token} · ${t.samples}n`, value: Math.round((1 - t.multiplier) * 100),
+    color: '#e6a23a',
+  }));
+
+  // Recent uploads view-count bars
+  const uploadsBarItems = (d.recent_uploads || []).map(u => ({
+    label: (u.title || '').slice(0, 50),
+    value: u.metrics?.views || 0,
+    color: 'rgba(206,170,98,0.85)',
+  }));
+
+  // Storage panel
+  const st = d.storage || {};
+  const totalDisk = st.disk_total_mb || 1;
+  const usedDisk  = (st.disk_total_mb || 0) - (st.disk_free_mb || 0);
+  const appPct    = ((st.app_total_mb || 0) / totalDisk) * 100;
+  const usedPct   = (usedDisk / totalDisk) * 100;
 
   body.innerHTML = `
     <!-- Top row -->
@@ -2161,7 +2269,39 @@ async function loadDashboard() {
       ${stat('Subs gained',    (ch.subs_gained || 0).toLocaleString())}
       ${stat('Today: done / err / queued', (pip.done||0) + ' / ' + (pip.errors||0) + ' / ' + (pip.running||0))}
     </div>
-    <div style="font-size:11px;color:var(--text-dim);margin-bottom:24px">Last analytics refresh: ${refreshed}</div>
+    <div style="font-size:11px;color:var(--text-dim);margin-bottom:18px">Last analytics refresh: ${refreshed}</div>
+
+    <!-- Activity chart + Storage panel side-by-side -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">
+      <div class="card">
+        <div class="card-title">Pipeline activity (last 14 days)</div>
+        ${svgActivityBars(d.daily_activity || [])}
+        <div style="font-size:10px;color:var(--text-dim);margin-top:6px">
+          <span style="display:inline-block;width:9px;height:9px;background:rgba(206,170,98,0.85);margin-right:4px"></span>done
+          <span style="display:inline-block;width:9px;height:9px;background:#e6a23a;margin:0 4px 0 14px"></span>error
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Storage</div>
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">
+          Disk: ${(usedDisk/1024).toFixed(1)} GB used · ${(st.disk_free_mb/1024 || 0).toFixed(1)} GB free of ${(totalDisk/1024).toFixed(0)} GB
+        </div>
+        <div style="height:14px;background:#1a1a1a;border-radius:3px;overflow:hidden;position:relative">
+          <div style="height:100%;width:${appPct.toFixed(1)}%;background:var(--gold);position:absolute;left:0"></div>
+          <div style="height:100%;width:${(usedPct - appPct).toFixed(1)}%;background:#444;position:absolute;left:${appPct.toFixed(1)}%"></div>
+        </div>
+        <div style="font-size:11px;color:var(--text);margin-top:10px;line-height:1.7">
+          <div>📁 workspace: <strong>${(st.workspace_mb||0).toLocaleString()} MB</strong></div>
+          <div>🎬 output: <strong>${(st.output_mb||0).toLocaleString()} MB</strong></div>
+          <div>💾 cache: <strong>${(st.cache_mb||0).toLocaleString()} MB</strong></div>
+          <div>🎨 branding: <strong>${(st.branding_mb||0).toLocaleString()} MB</strong></div>
+        </div>
+        ${(st.freeable?.freeable_mb > 0)
+          ? `<div style="font-size:11px;color:var(--gold);margin-top:8px">${st.freeable.freeable_mb} MB freeable in ${st.freeable.candidate_workspaces} workspace(s).</div>`
+          : ''}
+        <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="runStorageCleanup()">🧹 Run cleanup now</button>
+      </div>
+    </div>
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">
       <div class="card">
@@ -2179,36 +2319,23 @@ async function loadDashboard() {
       </div>
     </div>
 
-    ${recentRows ? `
+    ${uploadsBarItems.length ? `
     <div class="card" style="margin-bottom:18px">
-      <div class="card-title">Recent uploads</div>
-      <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead>
-            <tr style="color:var(--text-dim);text-align:left">
-              <th style="padding:6px 10px">When</th>
-              <th style="padding:6px 10px">Title</th>
-              <th style="padding:6px 10px;text-align:right">Views</th>
-              <th style="padding:6px 10px;text-align:right">CTR</th>
-              <th style="padding:6px 10px;text-align:right">AVD</th>
-            </tr>
-          </thead>
-          <tbody>${recentRows}</tbody>
-        </table>
-      </div>
+      <div class="card-title">Recent uploads — view counts</div>
+      ${svgBars(uploadsBarItems)}
     </div>` : ''}
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
       <div class="card">
         <div class="card-title">Top-performing tokens</div>
-        ${(d.top_tokens || []).length
-          ? d.top_tokens.map(t => tokRow(t, '+')).join('')
+        ${topBarItems.length
+          ? svgBars(topBarItems, { fmt: n => `+${n}%` })
           : '<div style="color:var(--text-dim);font-size:12px">No data yet — upload + refresh analytics.</div>'}
       </div>
       <div class="card">
         <div class="card-title">Underperforming tokens</div>
-        ${(d.bottom_tokens || []).length
-          ? d.bottom_tokens.map(t => tokRow(t, '')).join('')
+        ${botBarItems.length
+          ? svgBars(botBarItems, { fmt: n => `−${n}%` })
           : '<div style="color:var(--text-dim);font-size:12px">None yet — every signal stays at 1.0× until it deviates.</div>'}
       </div>
     </div>
@@ -2230,6 +2357,7 @@ const SCHED_TASK_LABELS = {
   harvest_ideas:     "🌾 Harvest ideas",
   produce_top_idea:  "🎬 Produce top idea",
   refresh_analytics: "📊 Refresh analytics",
+  storage_cleanup:   "🧹 Storage cleanup",
 };
 
 async function loadScheduler() {
@@ -2752,6 +2880,7 @@ async function loadSettings() {
   document.getElementById('pexels-key').value   = key;
   document.getElementById('openrouter-key').value = d.openrouter_api_key || '';
   document.getElementById('tts-voice').value    = d.tts_voice || 'en-US-GuyNeural';
+  renderVoicePool(d.tts_voices || []);
   document.getElementById('music-vol').value    = d.music_volume || 0.12;
   document.getElementById('vol-val').textContent= Math.round((d.music_volume||0.12)*100)+'%';
   document.getElementById('max-clips').value    = d.max_clips || 25;
@@ -2886,6 +3015,7 @@ async function saveSettings() {
     pexels_api_key:     document.getElementById('pexels-key').value.trim(),
     openrouter_api_key: document.getElementById('openrouter-key').value.trim(),
     tts_voice:          document.getElementById('tts-voice').value,
+    tts_voices:         collectVoicePool(),
     music_volume:       parseFloat(document.getElementById('music-vol').value),
     video_resolution:   res,
     max_clips:          parseInt(document.getElementById('max-clips').value),

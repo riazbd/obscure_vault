@@ -61,6 +61,9 @@ def load_config():
         "audio_polish": True,
         "ducking_db": 8.0,
         "apply_branding": True,
+        "auto_cleanup_workspace": True,
+        "output_cap_gb": 30.0,
+        "tts_voices": [],
     }
 
 def save_config(data):
@@ -110,6 +113,15 @@ def check_pexels_key(key):
 #  Pipeline runner (threaded)
 # ════════════════════════════════════════════════════════
 
+def _pick_voice(cfg: dict) -> str:
+    """Single voice or rotation pool. Falls back to GuyNeural if none."""
+    voices = cfg.get("tts_voices") or []
+    voices = [v for v in voices if isinstance(v, str) and v.strip()]
+    if voices:
+        return random.choice(voices)
+    return cfg.get("tts_voice") or "en-US-GuyNeural"
+
+
 def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
     """Runs the full pipeline in a background thread, updating jobs[job_id]."""
     import requests as req_lib
@@ -154,7 +166,9 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
         vo_path = workspace / "voiceover.mp3"
 
         async def _tts():
-            comm = edge_tts.Communicate(script, cfg.get("tts_voice", "en-US-GuyNeural"))
+            voice = _pick_voice(cfg)
+            log(f"   🎙️ voice: {voice}")
+            comm = edge_tts.Communicate(script, voice)
             await comm.save(str(vo_path))
 
         asyncio.run(_tts())
@@ -668,6 +682,30 @@ TIMESTAMPS
             "job_name":    job_name,
             "youtube":     upload_result,
         }
+
+        # ── Workspace storage cleanup ────────────────────
+        if cfg.get("auto_cleanup_workspace", True):
+            try:
+                from engines import storage as storage_engine
+                cr = storage_engine.cleanup_workspace(job_name)
+                if cr.get("ok"):
+                    log(f"🧹 freed {cr['freed_mb']} MB from workspace "
+                        f"(kept {cr['kept_files']} small files)")
+            except Exception as e:
+                log(f"⚠️  workspace cleanup failed: {e}")
+
+        # ── Output cap enforcement ───────────────────────
+        try:
+            from engines import storage as storage_engine
+            cap_gb = float(cfg.get("output_cap_gb", 30.0))
+            cap_r  = storage_engine.enforce_output_cap(cap_gb)
+            if cap_r.get("deleted"):
+                log(f"🧹 rolled output dir under {cap_gb} GB "
+                    f"(deleted {cap_r['deleted']} oldest, "
+                    f"freed {cap_r['freed_mb']} MB)")
+        except Exception as e:
+            log(f"⚠️  output cap enforcement failed: {e}")
+
         progress(100, "Complete! 🎬")
         job["status"] = "done"
         try:
@@ -896,8 +934,9 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
         progress(15, "Generating voiceover...")
         vo_path = workspace / "voiceover.mp3"
         async def _tts():
-            comm = edge_tts.Communicate(script_text,
-                                        cfg.get("tts_voice", "en-US-GuyNeural"))
+            voice = _pick_voice(cfg)
+            log(f"   🎙️ voice: {voice}")
+            comm = edge_tts.Communicate(script_text, voice)
             await comm.save(str(vo_path))
         asyncio.run(_tts())
 
@@ -1072,6 +1111,25 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
             "youtube":     upload_result,
             "shorts":      True,
         }
+
+        # Workspace cleanup for Shorts too
+        if cfg.get("auto_cleanup_workspace", True):
+            try:
+                from engines import storage as storage_engine
+                cr = storage_engine.cleanup_workspace(job_name)
+                if cr.get("ok"):
+                    log(f"🧹 freed {cr['freed_mb']} MB from workspace")
+            except Exception as e:
+                log(f"⚠️  workspace cleanup failed: {e}")
+        try:
+            from engines import storage as storage_engine
+            cap_gb = float(cfg.get("output_cap_gb", 30.0))
+            cap_r  = storage_engine.enforce_output_cap(cap_gb)
+            if cap_r.get("deleted"):
+                log(f"🧹 rolled output under {cap_gb} GB ({cap_r['deleted']} deleted)")
+        except Exception as e:
+            log(f"⚠️  output cap enforcement failed: {e}")
+
         progress(100, "Short ready! 🎬")
         job["status"] = "done"
         try:
@@ -2119,6 +2177,31 @@ def jobs_cleanup_endpoint():
     return jsonify({"deleted": deleted})
 
 
+# ════════════════════════════════════════════════════════
+#  Storage routes
+# ════════════════════════════════════════════════════════
+
+@app.route("/api/storage/usage", methods=["GET"])
+def storage_usage_route():
+    from engines import storage
+    out = storage.usage()
+    out["freeable"] = storage.estimate_freeable()
+    return jsonify(out)
+
+
+@app.route("/api/storage/cleanup", methods=["POST"])
+def storage_cleanup_route():
+    from engines import storage
+    data = request.json or {}
+    older = int(data.get("older_than_days", 0))
+    cap_gb = data.get("output_cap_gb")
+    out = {}
+    out["workspaces"] = storage.cleanup_all_workspaces(older_than_days=older)
+    if cap_gb is not None:
+        out["output"] = storage.enforce_output_cap(float(cap_gb))
+    return jsonify(out)
+
+
 @app.route("/api/dashboard", methods=["GET"])
 def dashboard():
     from engines import analytics, ideas as I, scheduler as sched
@@ -2167,6 +2250,41 @@ def dashboard():
     err  = sum(1 for j in todays_jobs if j.get("status") == "error")
     running = sum(1 for j in todays_jobs if j.get("status") == "running")
 
+    # ── Storage usage ───────────────────────────────────
+    storage_usage = {}
+    try:
+        from engines import storage as _storage
+        storage_usage = _storage.usage()
+        storage_usage["freeable"] = _storage.estimate_freeable()
+    except Exception:
+        pass
+
+    # ── 14-day activity from jobs.db ────────────────────
+    daily = []
+    try:
+        from engines import jobs as _jobs
+        all_jobs = _jobs.list_jobs(limit=500)
+        # bucket by yyyy-mm-dd
+        from collections import defaultdict
+        bucket = defaultdict(lambda: {"done": 0, "error": 0})
+        for j in all_jobs:
+            ts = (j.get("started_at") or "")[:10]
+            if not ts:
+                continue
+            if j.get("status") == "done":
+                bucket[ts]["done"] += 1
+            elif j.get("status") == "error":
+                bucket[ts]["error"] += 1
+        # Generate the last 14 days even if some are zero
+        from datetime import timedelta as _td
+        today_d = datetime.now(timezone.utc).date()
+        for i in range(13, -1, -1):
+            d = (today_d - _td(days=i)).isoformat()
+            daily.append({"date": d, "done": bucket[d]["done"],
+                          "error": bucket[d]["error"]})
+    except Exception:
+        pass
+
     return jsonify({
         "channel": {
             "uploads_tracked":  len(uploads),
@@ -2183,6 +2301,8 @@ def dashboard():
         "scheduler":       sched_state["tasks"],
         "today_pipeline":  {"done": done, "errors": err, "running": running,
                             "total": len(todays_jobs)},
+        "storage":         storage_usage,
+        "daily_activity":  daily,
     })
 
 
