@@ -36,6 +36,7 @@ DEFAULT_TASKS = {
     "harvest_ideas":     {"enabled": False, "interval_hours": 6},
     "produce_top_idea":  {"enabled": False, "interval_hours": 12},
     "refresh_analytics": {"enabled": False, "interval_hours": 24},
+    "storage_cleanup":   {"enabled": False, "interval_hours": 24},
 }
 
 
@@ -168,10 +169,23 @@ def task_refresh_analytics(get_cfg, runtime):
     return f"refreshed {res.get('refreshed',0)}/{res.get('total',0)}"
 
 
+def task_storage_cleanup(get_cfg, runtime):
+    from engines import storage as S
+    cfg = get_cfg()
+    older = int(cfg.get("scheduler_cleanup_days", 7))
+    cap   = float(cfg.get("output_cap_gb", 30.0))
+    ws = S.cleanup_all_workspaces(older_than_days=older)
+    op = S.enforce_output_cap(cap)
+    return (f"cleaned {ws.get('workspaces_cleaned', 0)} workspaces "
+            f"({ws.get('freed_mb', 0)} MB), "
+            f"deleted {op.get('deleted', 0)} old MP4s")
+
+
 TASKS = {
     "harvest_ideas":     task_harvest_ideas,
     "produce_top_idea":  task_produce_top_idea,
     "refresh_analytics": task_refresh_analytics,
+    "storage_cleanup":   task_storage_cleanup,
 }
 
 

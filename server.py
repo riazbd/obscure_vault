@@ -15,7 +15,7 @@ import threading
 import random
 import platform
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify, send_from_directory, send_file
 
 app = Flask(__name__, static_folder="ui")
@@ -60,6 +60,10 @@ def load_config():
         "motion_effect": "pan",
         "audio_polish": True,
         "ducking_db": 8.0,
+        "apply_branding": True,
+        "auto_cleanup_workspace": True,
+        "output_cap_gb": 30.0,
+        "tts_voices": [],
     }
 
 def save_config(data):
@@ -109,21 +113,43 @@ def check_pexels_key(key):
 #  Pipeline runner (threaded)
 # ════════════════════════════════════════════════════════
 
+def _pick_voice(cfg: dict) -> str:
+    """Single voice or rotation pool. Falls back to GuyNeural if none."""
+    voices = cfg.get("tts_voices") or []
+    voices = [v for v in voices if isinstance(v, str) and v.strip()]
+    if voices:
+        return random.choice(voices)
+    return cfg.get("tts_voice") or "en-US-GuyNeural"
+
+
 def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
     """Runs the full pipeline in a background thread, updating jobs[job_id]."""
     import requests as req_lib
     from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
     import edge_tts
+    from engines import jobs as jobs_db
 
     job = jobs[job_id]
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    jobs_db.upsert_job(job_id, kind="long", title=title, status="running",
+                       progress=0, stage="Starting...", started_at=started)
 
     def log(msg):
         job["log"].append(msg)
+        try:
+            jobs_db.append_log(job_id, msg)
+        except Exception:
+            pass
         print(f"[{job_id}] {msg}")
 
     def progress(pct, stage):
         job["progress"] = pct
         job["stage"] = stage
+        try:
+            jobs_db.upsert_job(job_id, status="running",
+                               progress=pct, stage=stage)
+        except Exception:
+            pass
         log(f"[{pct}%] {stage}")
 
     try:
@@ -140,7 +166,9 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
         vo_path = workspace / "voiceover.mp3"
 
         async def _tts():
-            comm = edge_tts.Communicate(script, cfg.get("tts_voice", "en-US-GuyNeural"))
+            voice = _pick_voice(cfg)
+            log(f"   🎙️ voice: {voice}")
+            comm = edge_tts.Communicate(script, voice)
             await comm.save(str(vo_path))
 
         asyncio.run(_tts())
@@ -451,6 +479,21 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg assembly failed:\n{result.stderr[-2000:]}")
 
+        # ── Step 5b: Optional branding (intro / outro) ──
+        if cfg.get("apply_branding", True):
+            try:
+                from engines import branding
+                if branding.has_slot("long_intro") or branding.has_slot("long_outro"):
+                    progress(83, "Adding intro / outro stings...")
+                    unbranded = workspace / "main_unbranded.mp4"
+                    final_mp4.rename(unbranded)
+                    branding.apply_for_video_kind(
+                        unbranded, final_mp4,
+                        kind="long", width=W, height=H, on_log=log,
+                    )
+            except Exception as e:
+                log(f"⚠️  branding failed (video saved without it): {e}")
+
         mb = final_mp4.stat().st_size / 1024 / 1024
         log(f"✅ Video: {final_mp4.name} ({mb:.1f} MB)")
         progress(88, "Generating thumbnail...")
@@ -639,8 +682,42 @@ TIMESTAMPS
             "job_name":    job_name,
             "youtube":     upload_result,
         }
+
+        # ── Workspace storage cleanup ────────────────────
+        if cfg.get("auto_cleanup_workspace", True):
+            try:
+                from engines import storage as storage_engine
+                cr = storage_engine.cleanup_workspace(job_name)
+                if cr.get("ok"):
+                    log(f"🧹 freed {cr['freed_mb']} MB from workspace "
+                        f"(kept {cr['kept_files']} small files)")
+            except Exception as e:
+                log(f"⚠️  workspace cleanup failed: {e}")
+
+        # ── Output cap enforcement ───────────────────────
+        try:
+            from engines import storage as storage_engine
+            cap_gb = float(cfg.get("output_cap_gb", 30.0))
+            cap_r  = storage_engine.enforce_output_cap(cap_gb)
+            if cap_r.get("deleted"):
+                log(f"🧹 rolled output dir under {cap_gb} GB "
+                    f"(deleted {cap_r['deleted']} oldest, "
+                    f"freed {cap_r['freed_mb']} MB)")
+        except Exception as e:
+            log(f"⚠️  output cap enforcement failed: {e}")
+
         progress(100, "Complete! 🎬")
         job["status"] = "done"
+        try:
+            jobs_db.upsert_job(
+                job_id, status="done", progress=100,
+                stage="Complete!",
+                finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                result=job["result"],
+                duration_s=int(round(duration)),
+            )
+        except Exception:
+            pass
 
     except Exception as e:
         import traceback
@@ -648,6 +725,14 @@ TIMESTAMPS
         job["error"]  = str(e)
         job["log"].append(f"❌ ERROR: {e}")
         job["log"].append(traceback.format_exc())
+        try:
+            jobs_db.upsert_job(
+                job_id, status="error", error=str(e),
+                finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+            jobs_db.append_log(job_id, f"❌ ERROR: {e}")
+        except Exception:
+            pass
 
 
 # ════════════════════════════════════════════════════════
@@ -793,16 +878,30 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
     import requests as req_lib
     from PIL import Image
     import edge_tts
+    from engines import jobs as jobs_db
 
     job = jobs[job_id]
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    jobs_db.upsert_job(job_id, kind="short", title=idea[:140],
+                       status="running", progress=0,
+                       stage="Starting Short...", started_at=started)
 
     def log(msg):
         job["log"].append(msg)
+        try:
+            jobs_db.append_log(job_id, msg)
+        except Exception:
+            pass
         print(f"[{job_id}] {msg}")
 
     def progress(pct, stage):
         job["progress"] = pct
         job["stage"] = stage
+        try:
+            jobs_db.upsert_job(job_id, status="running",
+                               progress=pct, stage=stage)
+        except Exception:
+            pass
         log(f"[{pct}%] {stage}")
 
     try:
@@ -835,8 +934,9 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
         progress(15, "Generating voiceover...")
         vo_path = workspace / "voiceover.mp3"
         async def _tts():
-            comm = edge_tts.Communicate(script_text,
-                                        cfg.get("tts_voice", "en-US-GuyNeural"))
+            voice = _pick_voice(cfg)
+            log(f"   🎙️ voice: {voice}")
+            comm = edge_tts.Communicate(script_text, voice)
             await comm.save(str(vo_path))
         asyncio.run(_tts())
 
@@ -935,6 +1035,21 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg failed:\n{result.stderr[-1500:]}")
 
+        # Optional Shorts branding (separate vertical slots)
+        if cfg.get("apply_branding", True):
+            try:
+                from engines import branding
+                if branding.has_slot("short_intro") or branding.has_slot("short_outro"):
+                    progress(83, "Adding Shorts intro / outro...")
+                    unbranded = workspace / "main_unbranded.mp4"
+                    final_mp4.rename(unbranded)
+                    branding.apply_for_video_kind(
+                        unbranded, final_mp4,
+                        kind="short", width=W, height=H, on_log=log,
+                    )
+            except Exception as e:
+                log(f"⚠️  Shorts branding failed: {e}")
+
         # ── Step 6: Vertical thumbnail ───────────────────
         progress(88, "Generating vertical thumbnail...")
         thumb = OUTPUT_DIR / f"{job_name}_thumbnail.jpg"
@@ -996,8 +1111,36 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
             "youtube":     upload_result,
             "shorts":      True,
         }
+
+        # Workspace cleanup for Shorts too
+        if cfg.get("auto_cleanup_workspace", True):
+            try:
+                from engines import storage as storage_engine
+                cr = storage_engine.cleanup_workspace(job_name)
+                if cr.get("ok"):
+                    log(f"🧹 freed {cr['freed_mb']} MB from workspace")
+            except Exception as e:
+                log(f"⚠️  workspace cleanup failed: {e}")
+        try:
+            from engines import storage as storage_engine
+            cap_gb = float(cfg.get("output_cap_gb", 30.0))
+            cap_r  = storage_engine.enforce_output_cap(cap_gb)
+            if cap_r.get("deleted"):
+                log(f"🧹 rolled output under {cap_gb} GB ({cap_r['deleted']} deleted)")
+        except Exception as e:
+            log(f"⚠️  output cap enforcement failed: {e}")
+
         progress(100, "Short ready! 🎬")
         job["status"] = "done"
+        try:
+            jobs_db.upsert_job(
+                job_id, status="done", progress=100, stage="Short ready!",
+                finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                result=job["result"],
+                duration_s=int(round(duration)),
+            )
+        except Exception:
+            pass
 
     except Exception as e:
         import traceback
@@ -1005,6 +1148,14 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
         job["error"]  = str(e)
         job["log"].append(f"❌ {e}")
         job["log"].append(traceback.format_exc())
+        try:
+            jobs_db.upsert_job(
+                job_id, status="error", error=str(e),
+                finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+            jobs_db.append_log(job_id, f"❌ ERROR: {e}")
+        except Exception:
+            pass
 
 
 @app.route("/api/run-short", methods=["POST"])
@@ -1854,6 +2005,203 @@ def _scheduler_runtime():
     }
 
 
+# ════════════════════════════════════════════════════════
+#  Branding (intro / outro stings)
+# ════════════════════════════════════════════════════════
+
+BRANDING_UPLOADS = BASE_DIR / "data" / "branding" / "_uploads"
+BRANDING_UPLOADS.mkdir(parents=True, exist_ok=True)
+brand_jobs = {}
+
+
+@app.route("/api/branding/list", methods=["GET"])
+def branding_list():
+    from engines import branding
+    return jsonify(branding.list_slots())
+
+
+def _run_branding_normalize(job_id: str, src_path: Path, slot: str):
+    from engines import branding
+    job = brand_jobs[job_id]
+    try:
+        branding.normalize_clip(src_path, slot)
+        try:
+            src_path.unlink()
+        except Exception:
+            pass
+        job["status"] = "done"
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/branding/upload", methods=["POST"])
+def branding_upload():
+    from engines import branding
+    slot = request.form.get("slot", "")
+    if slot not in branding.VALID_SLOTS:
+        return jsonify({"error": "bad slot"}), 400
+    if "file" not in request.files:
+        return jsonify({"error": "no file"}), 400
+    f = request.files["file"]
+    if not f.filename.lower().endswith((".mp4", ".mov", ".mkv", ".webm", ".m4v")):
+        return jsonify({"error": "needs to be mp4/mov/mkv/webm/m4v"}), 400
+
+    tmp = BRANDING_UPLOADS / f"upload_{slot}_{int(datetime.now().timestamp())}{Path(f.filename).suffix}"
+    f.save(str(tmp))
+
+    job_id = "br_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    brand_jobs[job_id] = {"status": "running", "log": [], "error": None}
+    threading.Thread(target=_run_branding_normalize,
+                     args=(job_id, tmp, slot), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/branding/upload-status/<job_id>")
+def branding_upload_status(job_id):
+    job = brand_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "error":  job["error"],
+    })
+
+
+@app.route("/api/branding/<slot>", methods=["DELETE"])
+def branding_delete(slot):
+    from engines import branding
+    if slot not in branding.VALID_SLOTS:
+        return jsonify({"error": "bad slot"}), 400
+    branding.delete_slot(slot)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/branding/preview/<slot>")
+def branding_preview(slot):
+    from engines import branding
+    if slot not in branding.VALID_SLOTS:
+        return jsonify({"error": "bad slot"}), 400
+    p = branding.slot_path(slot)
+    if not p.exists():
+        return jsonify({"error": "not found"}), 404
+    return send_file(str(p), mimetype="video/mp4")
+
+
+# ════════════════════════════════════════════════════════
+#  Performance Review (LLM scorecard)
+# ════════════════════════════════════════════════════════
+
+review_jobs = {}
+
+
+def _run_review(job_id: str, video_filename: str, api_key: str):
+    from engines import review as rev
+    job = review_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[review {job_id}] {msg}")
+
+    try:
+        result = rev.review(api_key, video_filename, on_log=log)
+        job["result"] = result
+        job["status"] = "done"
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/review-video", methods=["POST"])
+def review_video_route():
+    data = request.json or {}
+    video = (data.get("video") or "").strip()
+    if not video:
+        return jsonify({"error": "video required"}), 400
+
+    cfg = load_config()
+    api_key = cfg.get("openrouter_api_key", "").strip()
+    if not api_key:
+        return jsonify({"error": "OpenRouter key missing"}), 400
+
+    job_id = "rv_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    review_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(target=_run_review,
+                     args=(job_id, video, api_key), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/review-status/<job_id>")
+def review_status_route(job_id):
+    job = review_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-30:],
+        "result": job["result"],
+        "error":  job["error"],
+    })
+
+
+@app.route("/api/jobs/list", methods=["GET"])
+def jobs_list_endpoint():
+    from engines import jobs as jobs_db
+    status = request.args.get("status") or None
+    kind   = request.args.get("kind")   or None
+    limit  = min(int(request.args.get("limit", 100)), 500)
+    return jsonify(jobs_db.list_jobs(status=status, kind=kind, limit=limit))
+
+
+@app.route("/api/jobs/<job_id>", methods=["GET"])
+def jobs_get_endpoint(job_id):
+    from engines import jobs as jobs_db
+    item = jobs_db.get_job(job_id)
+    if not item:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(item)
+
+
+@app.route("/api/jobs/cleanup", methods=["POST"])
+def jobs_cleanup_endpoint():
+    from engines import jobs as jobs_db
+    keep = int((request.json or {}).get("keep_recent", 200))
+    deleted = jobs_db.delete_old(keep_recent=keep)
+    return jsonify({"deleted": deleted})
+
+
+# ════════════════════════════════════════════════════════
+#  Storage routes
+# ════════════════════════════════════════════════════════
+
+@app.route("/api/storage/usage", methods=["GET"])
+def storage_usage_route():
+    from engines import storage
+    out = storage.usage()
+    out["freeable"] = storage.estimate_freeable()
+    return jsonify(out)
+
+
+@app.route("/api/storage/cleanup", methods=["POST"])
+def storage_cleanup_route():
+    from engines import storage
+    data = request.json or {}
+    older = int(data.get("older_than_days", 0))
+    cap_gb = data.get("output_cap_gb")
+    out = {}
+    out["workspaces"] = storage.cleanup_all_workspaces(older_than_days=older)
+    if cap_gb is not None:
+        out["output"] = storage.enforce_output_cap(float(cap_gb))
+    return jsonify(out)
+
+
 @app.route("/api/dashboard", methods=["GET"])
 def dashboard():
     from engines import analytics, ideas as I, scheduler as sched
@@ -1902,6 +2250,41 @@ def dashboard():
     err  = sum(1 for j in todays_jobs if j.get("status") == "error")
     running = sum(1 for j in todays_jobs if j.get("status") == "running")
 
+    # ── Storage usage ───────────────────────────────────
+    storage_usage = {}
+    try:
+        from engines import storage as _storage
+        storage_usage = _storage.usage()
+        storage_usage["freeable"] = _storage.estimate_freeable()
+    except Exception:
+        pass
+
+    # ── 14-day activity from jobs.db ────────────────────
+    daily = []
+    try:
+        from engines import jobs as _jobs
+        all_jobs = _jobs.list_jobs(limit=500)
+        # bucket by yyyy-mm-dd
+        from collections import defaultdict
+        bucket = defaultdict(lambda: {"done": 0, "error": 0})
+        for j in all_jobs:
+            ts = (j.get("started_at") or "")[:10]
+            if not ts:
+                continue
+            if j.get("status") == "done":
+                bucket[ts]["done"] += 1
+            elif j.get("status") == "error":
+                bucket[ts]["error"] += 1
+        # Generate the last 14 days even if some are zero
+        from datetime import timedelta as _td
+        today_d = datetime.now(timezone.utc).date()
+        for i in range(13, -1, -1):
+            d = (today_d - _td(days=i)).isoformat()
+            daily.append({"date": d, "done": bucket[d]["done"],
+                          "error": bucket[d]["error"]})
+    except Exception:
+        pass
+
     return jsonify({
         "channel": {
             "uploads_tracked":  len(uploads),
@@ -1918,6 +2301,8 @@ def dashboard():
         "scheduler":       sched_state["tasks"],
         "today_pipeline":  {"done": done, "errors": err, "running": running,
                             "total": len(todays_jobs)},
+        "storage":         storage_usage,
+        "daily_activity":  daily,
     })
 
 
@@ -1940,6 +2325,8 @@ def scheduler_trigger(task_name):
 if __name__ == "__main__":
     import webbrowser
     from engines import scheduler as sched
+    from engines import jobs as jobs_db
+    jobs_db.mark_orphans_failed()
     sched.start(load_config, _scheduler_runtime())
     print("\n" + "═"*55)
     print("  OBSCURA VAULT — Starting UI Server")
