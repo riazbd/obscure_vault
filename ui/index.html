@@ -263,6 +263,14 @@ body::before {
 .badge-info  { background: rgba(60,90,180,0.2); color: #7090e0; border: 1px solid rgba(60,90,180,0.4); }
 
 /* ═══════════════════════════════════════════════════════
+   ICONS
+═══════════════════════════════════════════════════════ */
+.icon { width: 1em; height: 1em; display: inline-block; vertical-align: -0.15em; flex-shrink: 0; stroke-width: 2; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+.icon-sm { width: 14px; height: 14px; }
+.icon-md { width: 18px; height: 18px; }
+.icon-lg { width: 22px; height: 22px; }
+
+/* ═══════════════════════════════════════════════════════
    SETUP / SYSTEM CHECK
 ═══════════════════════════════════════════════════════ */
 .check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -618,7 +626,7 @@ input[type="range"]::-webkit-slider-thumb {
           </select>
           <button class="btn btn-ghost btn-sm" onclick="loadJobs()">↻ Refresh</button>
           <span style="flex:1"></span>
-          <button class="btn btn-ghost btn-sm" onclick="cleanupJobs()" title="Trim DB to most recent 200">🗑️ Cleanup</button>
+          <button class="btn btn-ghost btn-sm" onclick="cleanupJobs()" title="Trim DB to most recent 200"><svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg> Cleanup</button>
         </div>
         <div id="jobs-list"></div>
       </div>
@@ -771,7 +779,7 @@ input[type="range"]::-webkit-slider-thumb {
           <div>
             <!-- AI script generator -->
             <div class="card" style="border-color:var(--gold);border-width:1px;border-style:solid">
-              <div class="card-title" style="color:var(--gold)">⚡ Generate Script with AI (free)</div>
+              <div class="card-title" style="color:var(--gold);display:flex;align-items:center;gap:8px"><svg class="icon icon-md" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Generate Script with AI (free)</div>
               <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
                 Drop in a topic — we'll produce a working title, full narration, and SEO description
                 using free OpenRouter models. Set your key in Settings first.
@@ -800,7 +808,7 @@ input[type="range"]::-webkit-slider-thumb {
 
             <!-- Shorts -->
             <div class="card" style="border:1px solid #4d3300">
-              <div class="card-title" style="color:#e6a23a">📱 Make a Short (vertical 30–55 s)</div>
+              <div class="card-title" style="color:#e6a23a;display:flex;align-items:center;gap:8px"><svg class="icon icon-md" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/></svg> Make a Short (vertical 30–55 s)</div>
               <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
                 Drop a topic — get a vertical 1080×1920 video with hook-only narration,
                 burned-in big captions, vertical thumbnail, and #Shorts tagging.
@@ -866,7 +874,7 @@ A 15-minute video needs ~2160 words."
 
             <!-- Result -->
             <div class="result-card" id="result-card">
-              <div class="card-title" style="color:var(--gold-b)">✅ Video Ready</div>
+              <div class="card-title" style="color:var(--gold-b);display:flex;align-items:center;gap:8px"><svg class="icon icon-md" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg> Video Ready</div>
               <img class="result-thumb" id="result-thumb" src="" alt="thumbnail">
               <div class="result-meta" id="result-meta"></div>
               <div class="result-actions" id="result-actions"></div>
@@ -908,13 +916,13 @@ A 15-minute video needs ~2160 words."
             <div class="card">
               <div class="card-title">Pipeline Steps</div>
               <div style="font-size:12px;color:var(--text-muted);line-height:2">
-                <div>🎙️ &nbsp;Generate voiceover — Edge TTS</div>
-                <div>🎬 &nbsp;Download footage — Pexels API</div>
-                <div>🎨 &nbsp;Colour grade clips — FFmpeg</div>
-                <div>🎵 &nbsp;Mix background music</div>
-                <div>🔧 &nbsp;Assemble 1080p video</div>
-                <div>🖼️ &nbsp;Generate thumbnail</div>
-                <div>📄 &nbsp;Save YouTube metadata</div>
+                <div style="display:flex;align-items:center;gap:8px"><svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M19 11a7 7 0 11-14 0M12 18v3M8 21h8"/></svg> Generate voiceover — Edge TTS</div>
+                <div style="display:flex;align-items:center;gap:8px"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg> Download footage — Pexels API</div>
+                <div style="display:flex;align-items:center;gap:8px"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"/></svg> Colour grade clips — FFmpeg</div>
+                <div style="display:flex;align-items:center;gap:8px"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/></svg> Mix background music</div>
+                <div style="display:flex;align-items:center;gap:8px"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg> Assemble 1080p video</div>
+                <div style="display:flex;align-items:center;gap:8px"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg> Generate thumbnail</div>
+                <div style="display:flex;align-items:center;gap:8px"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg> Save YouTube metadata</div>
               </div>
               <div class="divider"></div>
               <div style="font-size:11px;color:var(--text-dim)">
@@ -995,7 +1003,7 @@ A 15-minute video needs ~2160 words."
           <div id="analytics-summary" style="font-size:12px;color:var(--text-dim)"></div>
           <div style="display:flex;gap:8px">
             <button class="btn btn-ghost btn-sm" onclick="refreshAnalytics()" title="Pull fresh CTR / views / AVD from YouTube">
-              📊 Refresh Analytics
+              <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg> Refresh Analytics
             </button>
             <button class="btn btn-ghost btn-sm" onclick="loadOutputs()">
               <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
@@ -1025,7 +1033,7 @@ A 15-minute video needs ~2160 words."
         <div class="card">
           <div class="card-title">Upload Music</div>
           <div class="dropzone" id="dropzone" onclick="document.getElementById('music-file-input').click()">
-            <div style="font-size:32px;margin-bottom:8px">🎵</div>
+            <svg class="icon" style="width:32px;height:32px;margin-bottom:8px;color:var(--text-dim)" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/></svg>
             <p>Click to upload MP3 or WAV files</p>
             <small>Drop files here too — Supports .mp3 and .wav</small>
           </div>
@@ -1101,13 +1109,13 @@ A 15-minute video needs ~2160 words."
           <div class="form-group">
             <label class="form-label">Default voice (used if rotation pool is empty)</label>
             <select class="form-select" id="tts-voice">
-              <option value="en-US-GuyNeural">🇺🇸 Guy — Deep, Authoritative (Recommended)</option>
-              <option value="en-US-EricNeural">🇺🇸 Eric — Warm, Measured</option>
-              <option value="en-US-DavisNeural">🇺🇸 Davis — Gravelly, Dramatic</option>
-              <option value="en-GB-RyanNeural">🇬🇧 Ryan — British, Formal</option>
-              <option value="en-GB-ThomasNeural">🇬🇧 Thomas — Deep British, Historical</option>
-              <option value="en-AU-WilliamNeural">🇦🇺 William — Calm Authority</option>
-              <option value="en-US-AndrewNeural">🇺🇸 Andrew — Clear, Crisp</option>
+              <option value="en-US-GuyNeural">[US] Guy — Deep, Authoritative (Recommended)</option>
+              <option value="en-US-EricNeural">[US] Eric — Warm, Measured</option>
+              <option value="en-US-DavisNeural">[US] Davis — Gravelly, Dramatic</option>
+              <option value="en-GB-RyanNeural">[UK] Ryan — British, Formal</option>
+              <option value="en-GB-ThomasNeural">[UK] Thomas — Deep British, Historical</option>
+              <option value="en-AU-WilliamNeural">[AU] William — Calm Authority</option>
+              <option value="en-US-AndrewNeural">[US] Andrew — Clear, Crisp</option>
             </select>
             <div class="form-hint">All voices are free via Microsoft Edge TTS. No signup required.</div>
           </div>
@@ -1370,7 +1378,7 @@ A 15-minute video needs ~2160 words."
 <!-- REVIEW MODAL -->
 <div class="modal-backdrop" id="review-modal">
   <div class="modal" style="max-width:680px">
-    <h3>🔬 Performance Review</h3>
+    <h3 style="display:flex;align-items:center;gap:10px"><svg class="icon icon-md" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg> Performance Review</h3>
     <div id="review-body" style="margin-top:12px"></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal('review-modal')">Close</button>
@@ -1391,6 +1399,44 @@ A 15-minute video needs ~2160 words."
 </div>
 
 <script>
+/* ════════════════════════════════════════════════════════
+   ICON HELPERS (replaces emojis with inline SVG)
+════════════════════════════════════════════════════════ */
+const ICON_PATHS = {
+  check:    '<path d="M5 13l4 4L19 7"/>',
+  x:        '<path d="M6 18L18 6M6 6l12 12"/>',
+  'check-circle': '<path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+  'x-circle':     '<path d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+  warning:  '<path d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4c-.77-1.33-2.69-1.33-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z"/>',
+  film:     '<path d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/>',
+  trash:    '<path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>',
+  music:    '<path d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/>',
+  palette:  '<path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"/>',
+  image:    '<path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>',
+  chart:    '<path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>',
+  search:   '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/>',
+  broom:    '<path d="M9.31 4.69l9.99 9.99M9.5 4.5l-3 3 9 9 3-3-9-9zM5.5 11.5l-2 2 5 5 2-2M3 21h7"/>',
+  bolt:     '<path d="M13 10V3L4 14h7v7l9-11h-7z"/>',
+  phone:    '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/>',
+  mic:      '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M19 11a7 7 0 11-14 0M12 18v3M8 21h8"/>',
+  cog:      '<path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/>',
+  doc:      '<path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>',
+  folder:   '<path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>',
+  disk:     '<path d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/>',
+  wheat:    '<path d="M12 22V8M12 8c0-3 2-5 4-5M12 8c0-3-2-5-4-5M12 14c0-2 2-4 4-4M12 14c0-2-2-4-4-4M12 19c0-2 2-3 4-3M12 19c0-2-2-3-4-3"/>',
+  sparkle:  '<path d="M12 2v4M2 12h4M22 12h-4M12 22v-4M5.6 5.6l2.8 2.8M18.4 5.6l-2.8 2.8M5.6 18.4l2.8-2.8M18.4 18.4l-2.8-2.8"/>',
+  download: '<path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/>',
+  upload:   '<path d="M7 16a4 4 0 01-.88-7.903A5 5 0 0115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>',
+  refresh:  '<path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>',
+  globe:    '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/>',
+};
+function icon(name, size) {
+  const path = ICON_PATHS[name];
+  if (!path) return '';
+  const s = size ? `style="width:${size}px;height:${size}px"` : '';
+  return `<svg class="icon icon-sm" ${s} viewBox="0 0 24 24" aria-hidden="true">${path}</svg>`;
+}
+
 /* ════════════════════════════════════════════════════════
    STATE
 ════════════════════════════════════════════════════════ */
@@ -1459,7 +1505,7 @@ async function runSystemCheck() {
           <div class="check-item-sub">${i.sub}</div>
         </div>
         <div class="badge ${i.ok ? 'badge-ok' : 'badge-error'}">
-          ${i.ok ? '✓ OK' : '✗ Missing'}
+          ${i.ok ? icon('check') + ' OK' : icon('x') + ' Missing'}
         </div>
       </div>
     `).join('');
@@ -1494,7 +1540,7 @@ function updateWordCount() {
 
   const status = document.getElementById('dur-status');
   if (words >= 720 && words <= 2200) {
-    status.textContent = '✓ Good length';
+    status.innerHTML = icon('check') + ' Good length';
     status.className = 'ok';
   } else if (words < 720) {
     status.textContent = `Need ${720 - words} more words`;
@@ -1599,13 +1645,13 @@ async function pollStatus() {
       resetGenBtn();
       currentResult = d.result;
       showResult(d.result);
-      toast('Video generated successfully! 🎬', 'ok', 5000);
+      toast('Video generated successfully.', 'ok', 5000);
     } else if (d.status === 'error') {
       clearInterval(pollInterval);
       animatePulse(false);
       resetGenBtn();
       toast('Pipeline error: ' + (d.error || 'Unknown error'), 'error', 8000);
-      appendLog('❌ ' + (d.error || 'Unknown error'));
+      appendLog('[ERR] ' + (d.error || 'Unknown error'));
     }
   } catch(e) {
     // ignore poll errors
@@ -1751,7 +1797,7 @@ async function loadOutputs() {
     <div class="output-card">
       ${v.thumbnail
         ? `<img class="output-thumb" src="/api/outputs/thumbnail/${v.thumbnail}" alt="thumbnail" loading="lazy">`
-        : `<div class="output-thumb-placeholder">🎬</div>`}
+        : `<div class="output-thumb-placeholder">${icon('film', 32)}</div>`}
       <div class="output-info">
         <div class="output-name">${vidName}</div>
         <div class="output-meta">${v.size_mb} MB &nbsp;·&nbsp; ${v.created}</div>
@@ -1760,10 +1806,10 @@ async function loadOutputs() {
           <a href="/api/outputs/download/${v.name}" class="btn btn-primary btn-sm" download>
             ↓ Download
           </a>
-          ${v.thumbnail ? `<a href="/api/outputs/thumbnail/${v.thumbnail}" class="btn btn-ghost btn-sm" download>🖼️</a>` : ''}
-          <button class="btn btn-gold btn-sm" onclick="ytUploadVideo('${v.name}')" title="Upload to YouTube">▶ YT</button>
-          <button class="btn btn-ghost btn-sm" onclick="reviewVideo('${v.name}')" title="LLM performance review">🔬</button>
-          <button class="btn btn-danger btn-sm" onclick="deleteOutput('${v.name}')">🗑️</button>
+          ${v.thumbnail ? `<a href="/api/outputs/thumbnail/${v.thumbnail}" class="btn btn-ghost btn-sm" title="Download thumbnail" download>${icon('image')}</a>` : ''}
+          <button class="btn btn-gold btn-sm" onclick="ytUploadVideo('${v.name}')" title="Upload to YouTube">${icon('upload')} YT</button>
+          <button class="btn btn-ghost btn-sm" onclick="reviewVideo('${v.name}')" title="LLM performance review">${icon('search')}</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteOutput('${v.name}')" title="Delete">${icon('trash')}</button>
         </div>
       </div>
     </div>
@@ -1819,7 +1865,7 @@ async function loadMusic() {
   list.innerHTML = d.map(t => `
     <div class="music-item">
       <div class="music-item-info">
-        <div class="music-icon">🎵</div>
+        <div class="music-icon">${icon('music', 22)}</div>
         <div>
           <div class="music-name">${t.name}</div>
           <div class="music-size">${t.size_kb} KB</div>
@@ -1914,16 +1960,16 @@ async function generateScriptWithAI() {
       document.getElementById('vid-script').value = res.script || '';
       window.aiResult = res;   // hold for description copy
       updateWordCount();
-      stat.innerHTML  = '<span class="badge badge-ok">✓ Generated — review, then click Generate Video below.</span>'
+      stat.innerHTML  = `<span class="badge badge-ok">${icon('check')} Generated — review, then click Generate Video below.</span>`
                       + '<div style="margin-top:8px;color:var(--text-dim)">Model: ' + (res.model||'?')
                       + ' · Words: ' + (res.word_count||0)
-                      + (res.warning ? ' · <span style="color:#e6a23a">⚠ ' + res.warning + '</span>' : '')
+                      + (res.warning ? ` · <span style="color:#e6a23a">${icon('warning')} ` + res.warning + '</span>' : '')
                       + '</div>';
       btn.disabled = false; btn.textContent = 'Generate Title + Script + SEO';
       toast('Script ready.', 'ok');
     } else if (sd.status === 'error') {
       clearInterval(aiScriptPoll); aiScriptPoll = null;
-      stat.innerHTML = '<span class="badge badge-error">✗ ' + (sd.error || 'Failed') + '</span>';
+      stat.innerHTML = `<span class="badge badge-error">${icon('x')} ` + (sd.error || 'Failed') + '</span>';
       btn.disabled = false; btn.textContent = 'Generate Title + Script + SEO';
       toast('Generation failed.', 'error');
     } else {
@@ -2027,13 +2073,13 @@ async function cleanupJobs() {
    VOICE ROTATION POOL
 ════════════════════════════════════════════════════════ */
 const VOICE_OPTIONS = [
-  ['en-US-GuyNeural',     '🇺🇸 Guy (deep, authoritative)'],
-  ['en-US-EricNeural',    '🇺🇸 Eric (warm, measured)'],
-  ['en-US-DavisNeural',   '🇺🇸 Davis (gravelly, dramatic)'],
-  ['en-GB-RyanNeural',    '🇬🇧 Ryan (British, formal)'],
-  ['en-GB-ThomasNeural',  '🇬🇧 Thomas (British, historical)'],
-  ['en-AU-WilliamNeural', '🇦🇺 William (calm authority)'],
-  ['en-US-AndrewNeural',  '🇺🇸 Andrew (clear, crisp)'],
+  ['en-US-GuyNeural',     '[US] Guy (deep, authoritative)'],
+  ['en-US-EricNeural',    '[US] Eric (warm, measured)'],
+  ['en-US-DavisNeural',   '[US] Davis (gravelly, dramatic)'],
+  ['en-GB-RyanNeural',    '[UK] Ryan (British, formal)'],
+  ['en-GB-ThomasNeural',  '[UK] Thomas (British, historical)'],
+  ['en-AU-WilliamNeural', '[AU] William (calm authority)'],
+  ['en-US-AndrewNeural',  '[US] Andrew (clear, crisp)'],
 ];
 
 function renderVoicePool(selected) {
@@ -2291,15 +2337,15 @@ async function loadDashboard() {
           <div style="height:100%;width:${(usedPct - appPct).toFixed(1)}%;background:#444;position:absolute;left:${appPct.toFixed(1)}%"></div>
         </div>
         <div style="font-size:11px;color:var(--text);margin-top:10px;line-height:1.7">
-          <div>📁 workspace: <strong>${(st.workspace_mb||0).toLocaleString()} MB</strong></div>
-          <div>🎬 output: <strong>${(st.output_mb||0).toLocaleString()} MB</strong></div>
-          <div>💾 cache: <strong>${(st.cache_mb||0).toLocaleString()} MB</strong></div>
-          <div>🎨 branding: <strong>${(st.branding_mb||0).toLocaleString()} MB</strong></div>
+          <div style="display:flex;align-items:center;gap:6px">${icon('folder')} workspace: <strong>${(st.workspace_mb||0).toLocaleString()} MB</strong></div>
+          <div style="display:flex;align-items:center;gap:6px">${icon('film')} output: <strong>${(st.output_mb||0).toLocaleString()} MB</strong></div>
+          <div style="display:flex;align-items:center;gap:6px">${icon('disk')} cache: <strong>${(st.cache_mb||0).toLocaleString()} MB</strong></div>
+          <div style="display:flex;align-items:center;gap:6px">${icon('palette')} branding: <strong>${(st.branding_mb||0).toLocaleString()} MB</strong></div>
         </div>
         ${(st.freeable?.freeable_mb > 0)
           ? `<div style="font-size:11px;color:var(--gold);margin-top:8px">${st.freeable.freeable_mb} MB freeable in ${st.freeable.candidate_workspaces} workspace(s).</div>`
           : ''}
-        <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="runStorageCleanup()">🧹 Run cleanup now</button>
+        <button class="btn btn-ghost btn-sm" style="margin-top:10px;display:inline-flex;align-items:center;gap:6px" onclick="runStorageCleanup()">${icon('broom')} Run cleanup now</button>
       </div>
     </div>
 
@@ -2354,10 +2400,10 @@ function stat(label, value) {
    SCHEDULER
 ════════════════════════════════════════════════════════ */
 const SCHED_TASK_LABELS = {
-  harvest_ideas:     "🌾 Harvest ideas",
-  produce_top_idea:  "🎬 Produce top idea",
-  refresh_analytics: "📊 Refresh analytics",
-  storage_cleanup:   "🧹 Storage cleanup",
+  harvest_ideas:     `${icon('wheat')} Harvest ideas`,
+  produce_top_idea:  `${icon('film')} Produce top idea`,
+  refresh_analytics: `${icon('chart')} Refresh analytics`,
+  storage_cleanup:   `${icon('broom')} Storage cleanup`,
 };
 
 async function loadScheduler() {
@@ -2478,13 +2524,13 @@ async function harvestIdeas() {
     if (sd.status === 'done') {
       clearInterval(harvestPoll); harvestPoll = null;
       btn.disabled = false; btn.textContent = 'Harvest Now';
-      stat.innerHTML = `<span class="badge badge-ok">✓ +${sd.result?.added||0} new ideas</span>`;
+      stat.innerHTML = `<span class="badge badge-ok">${icon('check')} +${sd.result?.added||0} new ideas</span>`;
       toast(`Added ${sd.result?.added||0} ideas.`, 'ok');
       loadIdeas();
     } else if (sd.status === 'error') {
       clearInterval(harvestPoll); harvestPoll = null;
       btn.disabled = false; btn.textContent = 'Harvest Now';
-      stat.innerHTML = '<span class="badge badge-error">✗ ' + (sd.error || 'failed') + '</span>';
+      stat.innerHTML = `<span class="badge badge-error">${icon('x')} ` + (sd.error || 'failed') + `</span>`;
     } else {
       stat.textContent = 'working... ' + ((sd.log || []).slice(-1)[0] || '');
     }
@@ -2538,7 +2584,7 @@ async function loadIdeas() {
             ${isPending ? `<button class="btn btn-ghost btn-sm" onclick="setIdeaStatus('${it.id}','rejected')">Reject</button>` : ''}
             ${it.status === 'rejected' || it.status === 'produced'
               ? `<button class="btn btn-ghost btn-sm" onclick="setIdeaStatus('${it.id}','pending')">Restore</button>` : ''}
-            <button class="btn btn-danger btn-sm" onclick="deleteIdea('${it.id}')">🗑️</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteIdea('${it.id}')" title="Delete">${icon('trash')}</button>
           </div>
         </div>
       </div>`;
@@ -2655,7 +2701,7 @@ function renderReview(box, r) {
       <div style="font-size:38px;font-weight:700;color:${ovColor}">${overall.score || 0}<span style="font-size:18px;color:var(--text-dim)">/10</span></div>
       <div style="font-size:13px;color:var(--text)">${escapeHTML(overall.verdict || '')}</div>
     </div>
-    ${!r.metrics_present ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">⚠ No YouTube metrics yet — review is from artifacts only.</div>` : ''}
+    ${!r.metrics_present ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;display:flex;align-items:center;gap:6px">${icon('warning')} No YouTube metrics yet — review is from artifacts only.</div>` : ''}
 
     ${dimRow('Title',       'title')}
     ${dimRow('Thumbnail',   'thumbnail')}
@@ -2686,7 +2732,7 @@ async function refreshYTStatus() {
   } catch (e) { box.innerHTML = '<span style="color:var(--text-dim)">Status unavailable.</span>'; return; }
 
   const row = (label, ok) =>
-    `<div>${ok ? '<span class="badge badge-ok">✓</span>' : '<span class="badge badge-error">✗</span>'} ${label}</div>`;
+    `<div>${ok ? `<span class="badge badge-ok">${icon('check')}</span>` : `<span class="badge badge-error">${icon('x')}</span>`} ${label}</div>`;
   let html = '';
   html += row('YouTube libs installed', d.installed);
   html += row('client_secrets.json uploaded', d.has_secrets);
@@ -2759,7 +2805,7 @@ async function ytAuthorize() {
     if (sd.status === 'done') {
       clearInterval(poll);
       btn.disabled = false; btn.textContent = '3. Authorize';
-      toast('Authorized! 🎉', 'ok');
+      toast('Authorized.', 'ok');
       refreshYTStatus();
     } else if (sd.status === 'error') {
       clearInterval(poll);
@@ -2890,11 +2936,11 @@ async function loadSettings() {
 
   if (key) {
     document.getElementById('pexels-status').innerHTML =
-      '<span class="badge badge-ok">✓ Key saved</span>';
+      `<span class="badge badge-ok">${icon('check')} Key saved</span>`;
   }
   if (d.openrouter_api_key) {
     document.getElementById('openrouter-status').innerHTML =
-      '<span class="badge badge-ok">✓ Key saved</span>';
+      `<span class="badge badge-ok">${icon('check')} Key saved</span>`;
   }
   document.getElementById('use-ai-thumb').checked = d.use_ai_thumbnail !== false;
   document.getElementById('thumb-variants').value = d.thumbnail_variants || 1;
@@ -2925,7 +2971,7 @@ async function refreshCaptionInstallStatus() {
     const r = await fetch('/api/captions/status');
     const d = await r.json();
     if (d.available) {
-      el.innerHTML = '<span class="badge badge-ok">✓ Installed</span>';
+      el.innerHTML = `<span class="badge badge-ok">${icon('check')} Installed</span>`;
       document.getElementById('cap-install-btn').textContent = 'Reinstall';
     } else {
       el.innerHTML = '<span class="badge badge-error">Not installed</span>';
@@ -2956,13 +3002,13 @@ async function installCaptions() {
     if (sd.status === 'done') {
       clearInterval(poll);
       btn.disabled = false; btn.textContent = 'Reinstall';
-      stat.innerHTML = '<span class="badge badge-ok">✓ Installed</span>';
+      stat.innerHTML = `<span class="badge badge-ok">${icon('check')} Installed</span>`;
       toast('faster-whisper installed.', 'ok');
       refreshCaptionInstallStatus();
     } else if (sd.status === 'error') {
       clearInterval(poll);
       btn.disabled = false; btn.textContent = 'Install caption deps';
-      stat.innerHTML = '<span class="badge badge-error">✗ ' + (sd.error || 'failed') + '</span>';
+      stat.innerHTML = `<span class="badge badge-error">${icon('x')} ` + (sd.error || 'failed') + `</span>`;
       toast('Install failed — see log.', 'error');
     }
   }, 1200);
@@ -2980,11 +3026,11 @@ async function validateAndSaveOpenrouter() {
   });
   const d = await r.json();
   if (d.valid) {
-    status.innerHTML = '<span class="badge badge-ok">✓ Valid key — saved!</span>';
+    status.innerHTML = `<span class="badge badge-ok">${icon('check')} Valid key — saved!</span>`;
     await saveSettings();
     toast('OpenRouter key validated and saved!', 'ok');
   } else {
-    status.innerHTML = '<span class="badge badge-error">✗ Invalid key or no free models available</span>';
+    status.innerHTML = `<span class="badge badge-error">${icon('x')} Invalid key or no free models available</span>`;
     toast('OpenRouter validation failed.', 'error');
   }
 }
@@ -3000,11 +3046,11 @@ async function validateAndSavePexels() {
   });
   const d = await r.json();
   if (d.valid) {
-    document.getElementById('pexels-status').innerHTML = '<span class="badge badge-ok">✓ Valid key — saved!</span>';
+    document.getElementById('pexels-status').innerHTML = `<span class="badge badge-ok">${icon('check')} Valid key — saved!</span>`;
     await saveSettings();
     toast('Pexels key validated and saved!', 'ok');
   } else {
-    document.getElementById('pexels-status').innerHTML = '<span class="badge badge-error">✗ Invalid key — check and retry</span>';
+    document.getElementById('pexels-status').innerHTML = `<span class="badge badge-error">${icon('x')} Invalid key — check and retry</span>`;
     toast('Invalid Pexels API key.', 'error');
   }
 }
