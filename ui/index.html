@@ -1362,6 +1362,17 @@ A 15-minute video needs ~2160 words."
 <!-- TOAST CONTAINER -->
 <div id="toast-container"></div>
 
+<!-- REVIEW MODAL -->
+<div class="modal-backdrop" id="review-modal">
+  <div class="modal" style="max-width:680px">
+    <h3>🔬 Performance Review</h3>
+    <div id="review-body" style="margin-top:12px"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('review-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- TRANSLATE MODAL -->
 <div class="modal-backdrop" id="translate-modal">
   <div class="modal">
@@ -1769,6 +1780,7 @@ async function loadOutputs() {
           ${v.thumbnail ? `<a href="/api/outputs/thumbnail/${v.thumbnail}" class="btn btn-ghost btn-sm" download>🖼️</a>` : ''}
           <button class="btn btn-gold btn-sm" onclick="ytUploadVideo('${v.name}')" title="Upload to YouTube">▶ YT</button>
           <button class="btn btn-ghost btn-sm" onclick="openTranslateModal('${v.name}')" title="Translate to another language">🌐</button>
+          <button class="btn btn-ghost btn-sm" onclick="reviewVideo('${v.name}')" title="LLM performance review">🔬</button>
           <button class="btn btn-danger btn-sm" onclick="deleteOutput('${v.name}')">🗑️</button>
         </div>
       </div>
@@ -2461,6 +2473,99 @@ async function produceIdea(id) {
   // Switch to Generate page so the user can watch progress
   showPage('generate');
   loadIdeas();
+}
+
+/* ════════════════════════════════════════════════════════
+   REVIEW
+════════════════════════════════════════════════════════ */
+let _reviewPoll = null;
+
+async function reviewVideo(filename) {
+  const body = document.getElementById('review-body');
+  document.getElementById('review-modal').classList.add('open');
+  body.innerHTML = `<div style="font-size:13px;color:var(--text-dim);padding:30px;text-align:center">
+    Analysing <strong style="color:var(--text)">${escapeHTML(filename)}</strong>...<br>
+    <span style="font-size:11px">Pulls script + outline + tags + metrics, asks an LLM for a scorecard. Takes ~10–20s.</span>
+  </div>`;
+
+  let r, d;
+  try {
+    r = await fetch('/api/review-video', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ video: filename }),
+    });
+    d = await r.json();
+  } catch (e) {
+    body.innerHTML = '<div style="color:#e67">Network error.</div>'; return;
+  }
+  if (!r.ok) {
+    body.innerHTML = `<div style="color:#e67">${escapeHTML(d.error || 'failed')}</div>`;
+    return;
+  }
+
+  if (_reviewPoll) clearInterval(_reviewPoll);
+  _reviewPoll = setInterval(async () => {
+    const sr = await fetch('/api/review-status/' + d.job_id);
+    const sd = await sr.json();
+    if (sd.status === 'done') {
+      clearInterval(_reviewPoll); _reviewPoll = null;
+      renderReview(body, sd.result);
+    } else if (sd.status === 'error') {
+      clearInterval(_reviewPoll); _reviewPoll = null;
+      body.innerHTML = `<div style="color:#e67">${escapeHTML(sd.error || 'failed')}</div>`;
+    }
+  }, 1500);
+}
+
+function renderReview(box, r) {
+  const overall = r.overall || {};
+  const scores  = r.scores  || {};
+  const ovColor = overall.score >= 7 ? 'var(--gold)'
+                : overall.score >= 5 ? 'var(--text)' : '#e6a23a';
+
+  const dimRow = (label, key) => {
+    const s = scores[key] || {};
+    const sc = s.score || 0;
+    const pct = (sc / 10) * 100;
+    const color = sc >= 7 ? 'var(--gold)' : sc >= 5 ? '#9aa' : '#e6a23a';
+    return `
+      <div style="padding:8px 0;border-bottom:1px solid #1a1a1a">
+        <div style="display:flex;justify-content:space-between;font-size:13px">
+          <span style="font-weight:600">${label}</span>
+          <span style="color:${color}">${sc}/10</span>
+        </div>
+        <div style="height:5px;background:#1a1a1a;border-radius:3px;margin-top:4px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:${color}"></div>
+        </div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:4px">${escapeHTML(s.reason || '')}</div>
+      </div>`;
+  };
+
+  const improvements = (r.actionable_improvements || []).map(s =>
+    `<li style="margin-bottom:6px">${escapeHTML(s)}</li>`
+  ).join('');
+
+  box.innerHTML = `
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:8px">
+      <div style="font-size:38px;font-weight:700;color:${ovColor}">${overall.score || 0}<span style="font-size:18px;color:var(--text-dim)">/10</span></div>
+      <div style="font-size:13px;color:var(--text)">${escapeHTML(overall.verdict || '')}</div>
+    </div>
+    ${!r.metrics_present ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">⚠ No YouTube metrics yet — review is from artifacts only.</div>` : ''}
+
+    ${dimRow('Title',       'title')}
+    ${dimRow('Thumbnail',   'thumbnail')}
+    ${dimRow('Hook',        'hook')}
+    ${dimRow('Structure',   'structure')}
+    ${dimRow('Description', 'description')}
+    ${dimRow('Tags',        'tags')}
+
+    <div style="margin-top:14px">
+      <div style="font-size:13px;font-weight:600;margin-bottom:6px">Actionable improvements</div>
+      <ul style="font-size:12px;color:var(--text);padding-left:20px;line-height:1.5">${improvements || '<li style="color:var(--text-dim)">no suggestions</li>'}</ul>
+    </div>
+
+    <div style="font-size:10px;color:var(--text-dim);margin-top:14px">model: ${escapeHTML(r.model || '?')}</div>
+  `;
 }
 
 /* ════════════════════════════════════════════════════════

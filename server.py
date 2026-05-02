@@ -2348,6 +2348,67 @@ def translate_video():
     return jsonify({"job_id": job_id})
 
 
+# ════════════════════════════════════════════════════════
+#  Performance Review (LLM scorecard)
+# ════════════════════════════════════════════════════════
+
+review_jobs = {}
+
+
+def _run_review(job_id: str, video_filename: str, api_key: str):
+    from engines import review as rev
+    job = review_jobs[job_id]
+
+    def log(msg):
+        job["log"].append(msg)
+        print(f"[review {job_id}] {msg}")
+
+    try:
+        result = rev.review(api_key, video_filename, on_log=log)
+        job["result"] = result
+        job["status"] = "done"
+    except Exception as e:
+        import traceback
+        job["status"] = "error"
+        job["error"]  = str(e)
+        job["log"].append(f"❌ {e}")
+        job["log"].append(traceback.format_exc()[-1500:])
+
+
+@app.route("/api/review-video", methods=["POST"])
+def review_video_route():
+    data = request.json or {}
+    video = (data.get("video") or "").strip()
+    if not video:
+        return jsonify({"error": "video required"}), 400
+
+    cfg = load_config()
+    api_key = cfg.get("openrouter_api_key", "").strip()
+    if not api_key:
+        return jsonify({"error": "OpenRouter key missing"}), 400
+
+    job_id = "rv_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    review_jobs[job_id] = {
+        "status": "running", "log": [], "result": None, "error": None,
+    }
+    threading.Thread(target=_run_review,
+                     args=(job_id, video, api_key), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/review-status/<job_id>")
+def review_status_route(job_id):
+    job = review_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status": job["status"],
+        "log":    job["log"][-30:],
+        "result": job["result"],
+        "error":  job["error"],
+    })
+
+
 @app.route("/api/jobs/list", methods=["GET"])
 def jobs_list_endpoint():
     from engines import jobs as jobs_db
