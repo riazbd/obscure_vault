@@ -19,3 +19,9 @@ config.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Graphify knowledge graph (generated, not source)
+graphify-out/
+
+# Claude Code project settings
+.claude/
