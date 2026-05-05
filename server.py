@@ -8,15 +8,17 @@ import os
 import sys
 import re
 import json
+import queue as _queue
 import shutil
 import asyncio
+import secrets
 import subprocess
 import threading
 import random
 import platform
 from pathlib import Path
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify, send_from_directory, send_file
+from flask import Flask, request, jsonify, send_from_directory, send_file, Response, stream_with_context
 
 app = Flask(__name__, static_folder="ui")
 BASE_DIR   = Path(__file__).parent
@@ -28,8 +30,60 @@ WORKSPACE  = BASE_DIR / "workspace"
 for d in [MUSIC_DIR, OUTPUT_DIR, WORKSPACE]:
     d.mkdir(exist_ok=True)
 
-# ── Job state (in-memory, single job at a time) ──────────
-jobs = {}   # job_id -> {status, progress, log, result}
+# ── Job state ────────────────────────────────────────────
+jobs = {}                   # job_id -> {status, progress, log, result}
+jobs_lock = threading.RLock()
+_running_job: set = set()   # at most one job_id while running
+_job_queue: _queue.Queue = _queue.Queue()   # FIFO of (job_id, kind, args...)
+
+# ── SSE event queues ──────────────────────────────────────
+# Each connected EventSource client gets its own queue.
+_sse_queues: dict[str, list[_queue.Queue]] = {}  # job_id -> [client queues]
+_sse_lock = threading.Lock()
+
+
+def _fire_webhook(cfg: dict, event: str, payload: dict) -> None:
+    """POST to the configured webhook URL on job completion/failure (non-blocking)."""
+    url = (cfg.get("webhook_url") or "").strip()
+    if not url:
+        return
+    allowed = cfg.get("webhook_events") or ["done", "error"]
+    if event not in allowed:
+        return
+    def _post():
+        try:
+            import requests as _req
+            _req.post(url, json={"event": event, **payload}, timeout=10)
+        except Exception:
+            pass
+    threading.Thread(target=_post, daemon=True).start()
+
+
+def _sse_publish(job_id: str, event_type: str, data: dict) -> None:
+    """Push an event to all SSE clients watching job_id."""
+    with _sse_lock:
+        queues = _sse_queues.get(job_id, [])
+    payload = json.dumps({"type": event_type, **data})
+    for q in queues:
+        try:
+            q.put_nowait(payload)
+        except _queue.Full:
+            pass
+
+
+# ── Path safety helper ────────────────────────────────────
+_SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9_\-\.]{1,200}$')
+
+def _safe_name(name: str, allowed_dir: Path) -> Path:
+    """Resolve *name* inside *allowed_dir*, raising 400 if traversal detected."""
+    if not _SAFE_NAME_RE.match(name):
+        from flask import abort
+        abort(400, "Invalid filename")
+    resolved = (allowed_dir / name).resolve()
+    if not str(resolved).startswith(str(allowed_dir.resolve())):
+        from flask import abort
+        abort(400, "Invalid path")
+    return resolved
 
 
 # ════════════════════════════════════════════════════════
@@ -138,6 +192,7 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
 
     def log(msg):
         job["log"].append(msg)
+        _sse_publish(job_id, "log", {"line": msg})
         try:
             jobs_db.append_log(job_id, msg)
         except Exception:
@@ -147,6 +202,7 @@ def run_pipeline_thread(job_id: str, title: str, script: str, cfg: dict):
     def progress(pct, stage):
         job["progress"] = pct
         job["stage"] = stage
+        _sse_publish(job_id, "progress", {"pct": pct, "stage": stage})
         try:
             jobs_db.upsert_job(job_id, status="running",
                                progress=pct, stage=stage)
@@ -710,6 +766,9 @@ TIMESTAMPS
 
         progress(100, "Complete! 🎬")
         job["status"] = "done"
+        _sse_publish(job_id, "done", {"result": job["result"]})
+        _fire_webhook(cfg, "done", {"job_id": job_id, "title": title,
+                                    "result": job["result"]})
         try:
             jobs_db.upsert_job(
                 job_id, status="done", progress=100,
@@ -727,6 +786,9 @@ TIMESTAMPS
         job["error"]  = str(e)
         job["log"].append(f"❌ ERROR: {e}")
         job["log"].append(traceback.format_exc())
+        _sse_publish(job_id, "error", {"error": str(e)})
+        _fire_webhook(cfg, "error", {"job_id": job_id, "title": title,
+                                     "error": str(e)})
         try:
             jobs_db.upsert_job(
                 job_id, status="error", error=str(e),
@@ -735,6 +797,8 @@ TIMESTAMPS
             jobs_db.append_log(job_id, f"❌ ERROR: {e}")
         except Exception:
             pass
+    finally:
+        _running_job.discard(job_id)
 
 
 # ════════════════════════════════════════════════════════
@@ -808,15 +872,17 @@ def upload_music():
     f = request.files["file"]
     if not f.filename.lower().endswith((".mp3", ".wav")):
         return jsonify({"error": "Only MP3 or WAV files allowed"}), 400
-    dest = MUSIC_DIR / f.filename
+    ext  = Path(f.filename).suffix.lower()
+    safe = secrets.token_hex(12) + ext
+    dest = MUSIC_DIR / safe
     f.save(str(dest))
-    return jsonify({"ok": True, "name": f.filename})
+    return jsonify({"ok": True, "name": safe})
 
 @app.route("/api/music/delete", methods=["POST"])
 def delete_music():
-    name = request.json.get("name", "")
-    path = MUSIC_DIR / name
-    if path.exists() and path.parent == MUSIC_DIR:
+    name = (request.json or {}).get("name", "")
+    path = _safe_name(name, MUSIC_DIR)
+    if path.exists():
         path.unlink()
         return jsonify({"ok": True})
     return jsonify({"error": "Not found"}), 404
@@ -839,23 +905,24 @@ def list_outputs():
 
 @app.route("/api/outputs/download/<filename>")
 def download_output(filename):
-    path = OUTPUT_DIR / filename
+    path = _safe_name(filename, OUTPUT_DIR)
     if path.exists():
         return send_file(str(path), as_attachment=True)
     return jsonify({"error": "Not found"}), 404
 
 @app.route("/api/outputs/thumbnail/<filename>")
 def get_thumbnail(filename):
-    path = OUTPUT_DIR / filename
+    path = _safe_name(filename, OUTPUT_DIR)
     if path.exists():
         return send_file(str(path), mimetype="image/jpeg")
     return jsonify({"error": "Not found"}), 404
 
 @app.route("/api/outputs/delete", methods=["POST"])
 def delete_output():
-    name  = request.json.get("name", "")
-    path  = OUTPUT_DIR / name
-    thumb = OUTPUT_DIR / name.replace(".mp4", "_thumbnail.jpg")
+    name  = (request.json or {}).get("name", "")
+    path  = _safe_name(name, OUTPUT_DIR)
+    safe_thumb_name = name.replace(".mp4", "_thumbnail.jpg")
+    thumb = _safe_name(safe_thumb_name, OUTPUT_DIR)
     if path.exists():
         path.unlink()
     if thumb.exists():
@@ -865,7 +932,8 @@ def delete_output():
 # ── Description for a video ──────────────────────────────
 @app.route("/api/outputs/description/<job_name>")
 def get_description(job_name):
-    desc_path = WORKSPACE / job_name / "description.txt"
+    safe_dir  = _safe_name(job_name, WORKSPACE)
+    desc_path = safe_dir / "description.txt"
     if desc_path.exists():
         return jsonify({"description": desc_path.read_text()})
     return jsonify({"description": ""})
@@ -890,6 +958,7 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
 
     def log(msg):
         job["log"].append(msg)
+        _sse_publish(job_id, "log", {"line": msg})
         try:
             jobs_db.append_log(job_id, msg)
         except Exception:
@@ -899,6 +968,7 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
     def progress(pct, stage):
         job["progress"] = pct
         job["stage"] = stage
+        _sse_publish(job_id, "progress", {"pct": pct, "stage": stage})
         try:
             jobs_db.upsert_job(job_id, status="running",
                                progress=pct, stage=stage)
@@ -1134,6 +1204,7 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
 
         progress(100, "Short ready! 🎬")
         job["status"] = "done"
+        _sse_publish(job_id, "done", {"result": job["result"]})
         try:
             jobs_db.upsert_job(
                 job_id, status="done", progress=100, stage="Short ready!",
@@ -1150,6 +1221,7 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
         job["error"]  = str(e)
         job["log"].append(f"❌ {e}")
         job["log"].append(traceback.format_exc())
+        _sse_publish(job_id, "error", {"error": str(e)})
         try:
             jobs_db.upsert_job(
                 job_id, status="error", error=str(e),
@@ -1158,6 +1230,8 @@ def run_short_pipeline_thread(job_id: str, idea: str, target_words: int,
             jobs_db.append_log(job_id, f"❌ ERROR: {e}")
         except Exception:
             pass
+    finally:
+        _running_job.discard(job_id)
 
 
 @app.route("/api/run-short", methods=["POST"])
@@ -1175,19 +1249,17 @@ def run_short():
     if not cfg.get("openrouter_api_key", "").strip():
         return jsonify({"error": "OpenRouter key required."}), 400
 
-    for jid, j in jobs.items():
-        if j["status"] == "running":
-            return jsonify({"error": "A video is already being generated."}), 409
-
-    job_id = "sh_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-    jobs[job_id] = {
-        "status": "running", "progress": 0, "stage": "Starting Short...",
-        "log": [], "result": None, "error": None, "duration": None,
-    }
-    threading.Thread(target=run_short_pipeline_thread,
-                     args=(job_id, idea, target_words, cfg),
-                     daemon=True).start()
-    return jsonify({"job_id": job_id})
+    job_id = "sh_" + datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + secrets.token_hex(4)
+    queue_pos = _job_queue.qsize() + (1 if _running_job else 0)
+    with jobs_lock:
+        jobs[job_id] = {
+            "status": "queued", "progress": 0,
+            "stage": f"Queued (position {queue_pos + 1})",
+            "log": [], "result": None, "error": None, "duration": None,
+            "queue_pos": queue_pos,
+        }
+    _job_queue.put(("short", job_id, idea, target_words, cfg))
+    return jsonify({"job_id": job_id, "queue_pos": queue_pos})
 
 
 # ── Run pipeline ─────────────────────────────────────────
@@ -1202,37 +1274,108 @@ def run_pipeline():
     if len(script) < 100:
         return jsonify({"error": "Script too short (minimum 100 characters)"}), 400
 
-    # Check if a job is already running
-    for jid, j in jobs.items():
-        if j["status"] == "running":
-            return jsonify({"error": "A video is already being generated. Please wait."}), 409
-
-    job_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    cfg    = load_config()
-    jobs[job_id] = {
-        "status": "running", "progress": 0, "stage": "Starting...",
-        "log": [], "result": None, "error": None, "duration": None
-    }
-
-    t = threading.Thread(target=run_pipeline_thread,
-                         args=(job_id, title, script, cfg), daemon=True)
-    t.start()
-    return jsonify({"job_id": job_id})
+    job_id    = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + secrets.token_hex(4)
+    cfg       = load_config()
+    queue_pos = _job_queue.qsize() + (1 if _running_job else 0)
+    with jobs_lock:
+        jobs[job_id] = {
+            "status": "queued", "progress": 0,
+            "stage": f"Queued (position {queue_pos + 1})",
+            "log": [], "result": None, "error": None, "duration": None,
+            "queue_pos": queue_pos,
+        }
+    _job_queue.put(("long", job_id, title, script, cfg))
+    return jsonify({"job_id": job_id, "queue_pos": queue_pos})
 
 @app.route("/api/status/<job_id>")
 def job_status(job_id):
-    job = jobs.get(job_id)
-    if not job:
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if job:
+        return jsonify({
+            "status":   job["status"],
+            "progress": job["progress"],
+            "stage":    job["stage"],
+            "log":      job["log"][-30:],
+            "result":   job["result"],
+            "error":    job["error"],
+            "duration": job.get("duration"),
+        })
+    # Fall back to SQLite — job may be from a previous server session
+    from engines import jobs as jobs_db
+    db_job = jobs_db.get_job(job_id)
+    if not db_job:
         return jsonify({"error": "Job not found"}), 404
+    log_lines = [l for l in (db_job.get("log") or "").split("\n") if l]
     return jsonify({
-        "status":   job["status"],
-        "progress": job["progress"],
-        "stage":    job["stage"],
-        "log":      job["log"][-30:],   # last 30 log lines
-        "result":   job["result"],
-        "error":    job["error"],
-        "duration": job.get("duration"),
+        "status":   db_job.get("status", "unknown"),
+        "progress": db_job.get("progress", 0),
+        "stage":    db_job.get("stage", ""),
+        "log":      log_lines[-30:],
+        "result":   db_job.get("result"),
+        "error":    db_job.get("error"),
+        "duration": db_job.get("duration_s"),
     })
+
+# ── Server-Sent Events ───────────────────────────────────
+@app.route("/api/events/<job_id>")
+def job_events(job_id):
+    """
+    SSE stream for a single job.  The client receives:
+      - "progress"  {pct, stage}        on every progress() call
+      - "log"       {line}              on every log() call
+      - "done"      {result}            when job finishes successfully
+      - "error"     {error}             when job finishes with error
+      - "ping"      {}                  every 15 s (keep-alive)
+    """
+    client_q: _queue.Queue = _queue.Queue(maxsize=200)
+    with _sse_lock:
+        _sse_queues.setdefault(job_id, []).append(client_q)
+
+    # Immediately replay current state so a reconnecting client is in sync
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if job:
+        for line in job["log"][-50:]:
+            client_q.put_nowait(json.dumps({"type": "log", "line": line}))
+        client_q.put_nowait(json.dumps({
+            "type": "progress", "pct": job["progress"], "stage": job["stage"]
+        }))
+        if job["status"] == "done":
+            client_q.put_nowait(json.dumps({"type": "done", "result": job["result"]}))
+        elif job["status"] == "error":
+            client_q.put_nowait(json.dumps({"type": "error", "error": job["error"]}))
+
+    def generate():
+        try:
+            import time as _time
+            last_ping = _time.monotonic()
+            while True:
+                try:
+                    payload = client_q.get(timeout=15)
+                    yield f"data: {payload}\n\n"
+                    data = json.loads(payload)
+                    if data.get("type") in ("done", "error"):
+                        break
+                except _queue.Empty:
+                    yield f"data: {json.dumps({'type': 'ping'})}\n\n"
+        finally:
+            with _sse_lock:
+                lst = _sse_queues.get(job_id, [])
+                if client_q in lst:
+                    lst.remove(client_q)
+                if not lst:
+                    _sse_queues.pop(job_id, None)
+
+    return Response(
+        stream_with_context(generate()),
+        content_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 
 # ── Install packages helper ──────────────────────────────
 @app.route("/api/install", methods=["POST"])
@@ -1445,13 +1588,17 @@ def _run_install_captions(job_id: str):
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True)
-        for line in iter(proc.stdout.readline, ""):
-            line = line.rstrip()
-            if line:
+        try:
+            stdout, _ = proc.communicate(timeout=300)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, _ = proc.communicate()
+            job["log"].append("⚠️ Install timed out (5 min)")
+        for line in stdout.splitlines():
+            if line.strip():
                 job["log"].append(line)
-                if len(job["log"]) > 400:
-                    job["log"] = job["log"][-300:]
-        proc.wait()
+        if len(job["log"]) > 400:
+            job["log"] = job["log"][-300:]
         job["status"] = "done" if proc.returncode == 0 else "error"
         if proc.returncode != 0:
             job["error"] = f"pip exited {proc.returncode}"
@@ -1505,13 +1652,17 @@ def _run_install_youtube(job_id: str):
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True)
-        for line in iter(proc.stdout.readline, ""):
-            line = line.rstrip()
-            if line:
+        try:
+            stdout, _ = proc.communicate(timeout=300)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, _ = proc.communicate()
+            job["log"].append("⚠️ Install timed out (5 min)")
+        for line in stdout.splitlines():
+            if line.strip():
                 job["log"].append(line)
-                if len(job["log"]) > 400:
-                    job["log"] = job["log"][-300:]
-        proc.wait()
+        if len(job["log"]) > 400:
+            job["log"] = job["log"][-300:]
         job["status"] = "done" if proc.returncode == 0 else "error"
         if proc.returncode != 0:
             job["error"] = f"pip exited {proc.returncode}"
@@ -2344,15 +2495,50 @@ def scheduler_trigger(task_name):
     return jsonify(res)
 
 
+def _queue_worker() -> None:
+    """Single background thread that serialises pipeline jobs from _job_queue."""
+    while True:
+        item = _job_queue.get()
+        if item is None:
+            break
+        kind = item[0]
+        try:
+            if kind == "long":
+                _, job_id, title, script, cfg = item
+                with jobs_lock:
+                    _running_job.add(job_id)
+                    if job_id in jobs:
+                        jobs[job_id]["status"] = "running"
+                        jobs[job_id]["stage"]  = "Starting..."
+                run_pipeline_thread(job_id, title, script, cfg)
+            elif kind == "short":
+                _, job_id, idea, target_words, cfg = item
+                with jobs_lock:
+                    _running_job.add(job_id)
+                    if job_id in jobs:
+                        jobs[job_id]["status"] = "running"
+                        jobs[job_id]["stage"]  = "Starting Short..."
+                run_short_pipeline_thread(job_id, idea, target_words, cfg)
+        except Exception:
+            pass
+        finally:
+            _job_queue.task_done()
+
+
 if __name__ == "__main__":
     import webbrowser
     from engines import scheduler as sched
     from engines import jobs as jobs_db
     jobs_db.mark_orphans_failed()
     sched.start(load_config, _scheduler_runtime())
+
+    # Start the serialised job queue worker
+    threading.Thread(target=_queue_worker, daemon=True, name="job-queue-worker").start()
+
     print("\n" + "═"*55)
     print("  OBSCURA VAULT — Starting UI Server")
     print("  Opening http://localhost:5050 in your browser...")
     print("═"*55 + "\n")
     threading.Timer(1.5, lambda: webbrowser.open("http://localhost:5050")).start()
-    app.run(host="0.0.0.0", port=5050, debug=False)
+    host = "0.0.0.0" if "--lan" in sys.argv else "127.0.0.1"
+    app.run(host=host, port=5050, debug=False)

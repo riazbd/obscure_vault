@@ -13,6 +13,8 @@ prunes. This module exposes:
     matching MP4 in output/
 """
 
+import os
+import json
 import shutil
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -33,14 +35,23 @@ KEEP_IN_WS = {"script.txt", "metadata.json", "description.txt",
 # ════════════════════════════════════════════════════════
 
 def _du(path: Path) -> int:
-    """Recursive byte size; 0 if path missing."""
+    """Recursive byte size using os.scandir (avoids rglob on large trees)."""
     if not path.exists():
         return 0
     total = 0
-    for p in path.rglob("*"):
+    stack = [str(path)]
+    while stack:
+        cur = stack.pop()
         try:
-            if p.is_file():
-                total += p.stat().st_size
+            with os.scandir(cur) as it:
+                for entry in it:
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            total += entry.stat().st_size
+                        elif entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                    except OSError:
+                        continue
         except OSError:
             continue
     return total
@@ -138,21 +149,38 @@ def cleanup_all_workspaces(*, older_than_days: int = 7) -> dict:
 #  Output cap enforcement
 # ════════════════════════════════════════════════════════
 
+def _uploaded_filenames() -> set[str]:
+    """Return the set of local filenames that have been uploaded to YouTube."""
+    try:
+        uploads_path = DATA_DIR / "uploads.json"
+        if not uploads_path.exists():
+            return set()
+        data = json.loads(uploads_path.read_text())
+        return {u["local_filename"] for u in data if u.get("local_filename")}
+    except Exception:
+        return set()
+
+
 def enforce_output_cap(max_gb: float = 30.0) -> dict:
     """
     Drop oldest MP4s + their sibling thumbnails + .srt + workspace
     folders until total output dir size is under max_gb.
+    Skips videos that have not been uploaded to YouTube yet.
     """
     if not OUTPUT.exists():
         return {"kept": 0, "deleted": 0, "freed_mb": 0, "current_mb": 0}
 
+    uploaded = _uploaded_filenames()
     cap = int(max_gb * 1024 * 1024 * 1024)
     items = sorted(OUTPUT.glob("*.mp4"), key=lambda p: p.stat().st_mtime)
     total = sum(p.stat().st_size for p in items)
-    deleted, freed = 0, 0
+    deleted, freed, skipped = 0, 0, 0
 
     while total > cap and items:
         p = items.pop(0)
+        if p.name not in uploaded:
+            skipped += 1
+            continue  # not yet uploaded — protect it
         siblings = [
             p,
             OUTPUT / p.name.replace(".mp4", "_thumbnail.jpg"),
@@ -178,6 +206,7 @@ def enforce_output_cap(max_gb: float = 30.0) -> dict:
     return {
         "kept":       len(items),
         "deleted":    deleted,
+        "skipped":    skipped,
         "freed_mb":   _mb(freed),
         "current_mb": _mb(total),
     }

@@ -270,10 +270,14 @@ def publish(
         except Exception as e:
             log(f"   ⚠️  caption upload failed (non-fatal — needs verified account): {e}")
 
-    # Record for analytics tracking
+    # Record for analytics tracking (store local filename so storage engine
+    # can skip deleting videos that haven't been uploaded yet)
     try:
         from engines import analytics
-        analytics.record_upload(video_id, title, tags, idea_id=idea_id)
+        analytics.record_upload(
+            video_id, title, tags, idea_id=idea_id,
+            local_filename=Path(video_path).name if video_path else None,
+        )
     except Exception:
         pass
 

@@ -18,6 +18,19 @@ def is_available() -> bool:
         return False
 
 
+# Module-level model cache — avoids the ~20 s cold-start on every pipeline run
+_whisper_cache: dict[str, "faster_whisper.WhisperModel"] = {}
+
+
+def _get_model(model_name: str):
+    if model_name not in _whisper_cache:
+        from faster_whisper import WhisperModel
+        _whisper_cache[model_name] = WhisperModel(
+            model_name, device="cpu", compute_type="int8"
+        )
+    return _whisper_cache[model_name]
+
+
 # ════════════════════════════════════════════════════════
 #  Transcription
 # ════════════════════════════════════════════════════════
@@ -29,11 +42,9 @@ def transcribe(audio_path: Path, model_name: str = "base.en",
     Each segment is one short phrase suitable for a single subtitle line.
     """
     log = on_log or (lambda m: None)
-    from faster_whisper import WhisperModel  # lazy
 
     log(f"   📥 loading whisper model '{model_name}' (first run downloads ~140 MB)...")
-    # int8 quantisation keeps it CPU-friendly on the T480
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    model = _get_model(model_name)
 
     log("   🎧 transcribing voiceover...")
     segments, info = model.transcribe(

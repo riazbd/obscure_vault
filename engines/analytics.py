@@ -23,6 +23,8 @@ import threading
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
+from engines.utils import tokens as _tokens
+
 
 BASE_DIR     = Path(__file__).resolve().parent.parent
 DATA_DIR     = BASE_DIR / "data"
@@ -51,7 +53,8 @@ def _save_uploads(items: list[dict]):
 
 
 def record_upload(video_id: str, title: str, tags: list[str] | None,
-                  idea_id: str | None = None) -> None:
+                  idea_id: str | None = None,
+                  local_filename: str | None = None) -> None:
     """Idempotently log a new upload."""
     if not video_id:
         return
@@ -60,11 +63,12 @@ def record_upload(video_id: str, title: str, tags: list[str] | None,
         if any(it.get("video_id") == video_id for it in items):
             return
         items.append({
-            "video_id":    video_id,
-            "title":       title,
-            "tags":        tags or [],
-            "idea_id":     idea_id,
-            "uploaded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "video_id":       video_id,
+            "title":          title,
+            "tags":           tags or [],
+            "idea_id":        idea_id,
+            "local_filename": local_filename,
+            "uploaded_at":    datetime.now(timezone.utc).isoformat(timespec="seconds"),
         })
         _save_uploads(items)
 
@@ -224,17 +228,6 @@ def refresh_metrics(on_log=None) -> dict:
 # ════════════════════════════════════════════════════════
 #  Token-level performance signals
 # ════════════════════════════════════════════════════════
-
-_STOPWORDS = {"the","a","an","of","and","in","on","at","to","for","with",
-              "is","was","were","what","why","how","that","this","these",
-              "those","but","or","by","from","be","been","being",
-              "their","they","them","its","not","no","yes"}
-
-
-def _tokens(s: str) -> set[str]:
-    s = s.lower()
-    s = re.sub(r"[^a-z0-9\s]", " ", s)
-    return {w for w in s.split() if len(w) > 2 and w not in _STOPWORDS}
 
 
 def compute_token_signals() -> dict:

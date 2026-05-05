@@ -36,6 +36,11 @@ class LLMError(Exception):
     pass
 
 
+# Circuit breaker: tracks when each model is next usable (monotonic seconds).
+# 429 → back off for 60 s; 5xx transient → back off per-attempt only.
+_model_fail_until: dict[str, float] = {}
+
+
 def _cache_key(model: str, messages: list, temperature: float) -> str:
     h = hashlib.sha256()
     h.update(model.encode())
@@ -60,50 +65,73 @@ def _cache_put(key: str, text: str, model: str):
 
 
 def _extract_json(text: str):
-    """Pull the first balanced {...} or [...] block out of the model output."""
+    """
+    Extract the first valid JSON object or array from model output.
+
+    Improvements over the original:
+    - Tries every candidate { / [ position in order (not just the first one),
+      so preamble text with stray braces doesn't break parsing.
+    - Guards depth against going negative (malformed close before open).
+    - Only sets the escape flag while inside a string.
+    - Hard size limit to prevent runaway scanning on huge responses.
+    """
     if not text:
         raise LLMError("empty response")
+    if len(text) > 500_000:
+        raise LLMError("response too large to parse safely")
 
-    # Strip code fences
+    # Strip code fences first
     fence = re.search(r"```(?:json)?\s*(.+?)```", text, re.S)
     if fence:
-        text = fence.group(1)
+        text = fence.group(1).strip()
 
-    # Find first { or [
-    start_obj = text.find("{")
-    start_arr = text.find("[")
-    starts = [s for s in (start_obj, start_arr) if s >= 0]
-    if not starts:
+    # Collect every { and [ position in document order
+    candidates: list[int] = []
+    for ch in ("{", "["):
+        pos = 0
+        while True:
+            idx = text.find(ch, pos)
+            if idx < 0:
+                break
+            candidates.append(idx)
+            pos = idx + 1
+    candidates.sort()
+
+    if not candidates:
         raise LLMError(f"no JSON found in response: {text[:200]}")
-    start = min(starts)
-    open_ch  = text[start]
-    close_ch = "}" if open_ch == "{" else "]"
 
-    depth, in_str, esc = 0, False, False
-    for i in range(start, len(text)):
-        c = text[i]
-        if esc:
-            esc = False
-            continue
-        if c == "\\":
-            esc = True
-            continue
-        if c == '"':
-            in_str = not in_str
-            continue
-        if in_str:
-            continue
-        if c == open_ch:
-            depth += 1
-        elif c == close_ch:
-            depth -= 1
-            if depth == 0:
-                blob = text[start:i+1]
-                try:
-                    return json.loads(blob)
-                except json.JSONDecodeError as e:
-                    raise LLMError(f"json parse: {e}; blob={blob[:200]}") from e
-    raise LLMError("unbalanced JSON")
+    last_err = "no valid JSON block found"
+    for start in candidates:
+        open_ch  = text[start]
+        close_ch = "}" if open_ch == "{" else "]"
+        depth, in_str, esc = 0, False, False
+
+        for i in range(start, len(text)):
+            c = text[i]
+            if esc:
+                esc = False
+                continue
+            if c == "\\" and in_str:
+                esc = True
+                continue
+            if c == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if c == open_ch:
+                depth += 1
+            elif c == close_ch and depth > 0:
+                depth -= 1
+                if depth == 0:
+                    blob = text[start : i + 1]
+                    try:
+                        return json.loads(blob)
+                    except json.JSONDecodeError as e:
+                        last_err = f"parse failed at pos {start}: {e}; blob={blob[:120]}"
+                        break  # try next candidate start
+
+    raise LLMError(f"no valid JSON in response — {last_err}")
 
 
 def call(
@@ -127,8 +155,14 @@ def call(
 
     models   = list(models or DEFAULT_MODELS)
     last_err = None
+    now      = time.monotonic()
 
     for model in models:
+        # Circuit breaker: skip models that are cooling down after a 429
+        if now < _model_fail_until.get(model, 0):
+            last_err = f"{model}: skipped (rate-limited, cooling down)"
+            continue
+
         ck = _cache_key(model, messages, temperature)
         if use_cache:
             cached = _cache_get(ck)
@@ -194,12 +228,18 @@ def call(
                 _cache_put(ck, text, model)
                 return {"text": text, "json": None, "model": model, "cached": False}
 
-            # 429 or 5xx → backoff and retry; 4xx (other) → next model
-            if r.status_code == 429 or 500 <= r.status_code < 600:
+            if r.status_code == 429:
+                # Rate-limited: cool this model down for 60 s, try the next one
+                _model_fail_until[model] = time.monotonic() + 60
+                last_err = f"{model}: rate-limited (429) — skipping for 60 s"
+                break  # move to next model immediately
+            elif 500 <= r.status_code < 600:
+                # Transient server error: exponential backoff, then retry same model
                 last_err = f"{model}: HTTP {r.status_code}"
                 time.sleep((2 ** attempt) + 1)
                 continue
             else:
+                # Other 4xx: not retryable, try next model
                 last_err = f"{model}: HTTP {r.status_code} {r.text[:200]}"
                 break
 

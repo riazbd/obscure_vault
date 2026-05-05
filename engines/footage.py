@@ -305,9 +305,21 @@ def pick_clips_for_chunks(
 #  Download + assembly
 # ════════════════════════════════════════════════════════
 
-def _download(url: str, dest: Path) -> bool:
+def _download(url: str, dest: Path, clip_meta: dict | None = None) -> bool:
+    """Download url → dest; register in clip library on success."""
     if dest.exists():
         return True
+    # Check library cache first (clips shared across renders)
+    if clip_meta:
+        try:
+            from engines import clip_library as _cl
+            cached = _cl.find_cached(clip_meta["id"])
+            if cached and cached != dest:
+                import shutil as _shutil
+                _shutil.copy2(str(cached), str(dest))
+                return True
+        except Exception:
+            pass
     try:
         r = requests.get(url, stream=True, timeout=90)
         if r.status_code != 200:
@@ -315,6 +327,18 @@ def _download(url: str, dest: Path) -> bool:
         with open(dest, "wb") as f:
             for chunk in r.iter_content(1024 * 256):
                 f.write(chunk)
+        # Register in persistent library so future renders can reuse it
+        if clip_meta:
+            try:
+                from engines import clip_library as _cl
+                _cl.register(
+                    clip_meta["id"], url, clip_meta.get("source", ""),
+                    dest, clip_meta.get("query", ""),
+                    clip_meta.get("duration", 0),
+                    clip_meta.get("width", 0), clip_meta.get("height", 0),
+                )
+            except Exception:
+                pass
         return True
     except requests.RequestException:
         return False
@@ -387,14 +411,37 @@ def build_footage_track(plan: list[dict], workspace: Path,
                         motion: str = "pan",
                         on_log=None) -> Path:
     """
-    Download every plan clip, render per-chunk segments, concat.
+    Download every plan clip (parallel, I/O-bound), render segments
+    (sequential, CPU-bound FFmpeg), then concat.
     Returns the trimmed final footage track path.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     log = on_log or (lambda m: None)
     raw_dir  = workspace / "footage"
     proc_dir = workspace / "processed"
     raw_dir.mkdir(exist_ok=True)
     proc_dir.mkdir(exist_ok=True)
+
+    # Phase 1: download all clips in parallel (skip already-cached files)
+    # Carry full clip metadata so _download() can consult the clip library.
+    to_dl: dict[str, tuple[str, Path, dict]] = {}
+    for item in plan:
+        clip = item.get("clip")
+        if clip:
+            src = raw_dir / f"{clip['id']}.mp4"
+            if not src.exists():
+                to_dl[clip["id"]] = (clip["url"], src, clip)
+
+    if to_dl:
+        log(f"   📥 downloading {len(to_dl)} clips (up to 4 in parallel)...")
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futs = {pool.submit(_download, url, dest, meta): cid
+                    for cid, (url, dest, meta) in to_dl.items()}
+            for fut in as_completed(futs):
+                cid = futs[fut]
+                if not fut.result():
+                    log(f"      ⚠️  download failed: {cid}")
 
     segments: list[Path] = []
 
@@ -417,7 +464,7 @@ def build_footage_track(plan: list[dict], workspace: Path,
 
         suffix = ".mp4"
         src = raw_dir / f"{clip['id']}{suffix}"
-        if not _download(clip["url"], src):
+        if not _download(clip["url"], src, clip):
             log(f"   ⚠️  download failed: {clip['id']}; falling back to dark card")
             subprocess.run([
                 "ffmpeg", "-y", "-f", "lavfi",

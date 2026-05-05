@@ -54,6 +54,73 @@ export async function installPackages() {
   }
 }
 
+// ── SSE / polling monitor ────────────────────────────────
+
+function _stopJobMonitor() {
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+  if (state.pollInterval) {
+    clearInterval(state.pollInterval);
+    state.pollInterval = null;
+  }
+}
+
+function _onJobDone(result) {
+  _stopJobMonitor();
+  animatePulse(false);
+  resetGenBtn();
+  state.currentResult = result;
+  showResult(result);
+  toast('Video generated successfully.', 'ok', 5000);
+}
+
+function _onJobError(errorMsg) {
+  _stopJobMonitor();
+  animatePulse(false);
+  resetGenBtn();
+  toast('Pipeline error: ' + (errorMsg || 'Unknown error'), 'error', 8000);
+  appendLog('[ERR] ' + (errorMsg || 'Unknown error'));
+}
+
+function _connectSSE(jobId) {
+  if (!window.EventSource) {
+    // Browser doesn't support SSE — fall back to polling
+    state.pollInterval = setInterval(pollStatus, 2000);
+    return;
+  }
+  const es = new EventSource(`/api/events/${jobId}`);
+  state.eventSource = es;
+
+  es.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'progress') {
+        setProgress(msg.pct, msg.stage);
+      } else if (msg.type === 'log') {
+        appendLog(msg.line);
+      } else if (msg.type === 'done') {
+        _onJobDone(msg.result);
+      } else if (msg.type === 'error') {
+        _onJobError(msg.error);
+      }
+      // 'ping' intentionally ignored
+    } catch (err) {
+      console.error('[SSE parse]', err);
+    }
+  };
+
+  es.onerror = () => {
+    // SSE failed — close and fall back to polling if job isn't done yet
+    es.close();
+    state.eventSource = null;
+    if (state.currentJobId && !state.pollInterval) {
+      state.pollInterval = setInterval(pollStatus, 2000);
+    }
+  };
+}
+
 export async function startGeneration() {
   const title  = document.getElementById('vid-title').value.trim();
   const script = document.getElementById('vid-script').value.trim();
@@ -61,10 +128,9 @@ export async function startGeneration() {
   if (!title) { toast('Please enter a video title.', 'error'); return; }
   if (script.length < 100) { toast('Script is too short (minimum 100 characters).', 'error'); return; }
 
-  // Reset UI
   document.getElementById('gen-btn').disabled = true;
   document.getElementById('result-card').classList.remove('show');
-  setProgress(0, 'Starting pipeline...');
+  setProgress(0, 'Queuing job...');
   clearLog();
   animatePulse(true);
 
@@ -81,7 +147,13 @@ export async function startGeneration() {
       return;
     }
     state.currentJobId = d.job_id;
-    state.pollInterval = setInterval(pollStatus, 2000);
+    state.lastLogLength = 0;
+    if (d.queue_pos > 0) {
+      toast(`Queued at position ${d.queue_pos + 1} — will start when current job finishes.`, 'info', 5000);
+      setProgress(0, `Queued (position ${d.queue_pos + 1})`);
+    }
+    _stopJobMonitor();
+    _connectSSE(d.job_id);
   } catch(e) {
     toast('Cannot reach server. Is server.py running?', 'error');
     resetGenBtn();
@@ -114,17 +186,22 @@ export async function generateShort() {
     btn.disabled = false; btn.textContent = 'Generate Short'; return;
   }
 
-  // Reuse the existing progress panel
   state.currentJobId = d.job_id;
+  state.lastLogLength = 0;
   document.getElementById('result-card').classList.remove('open');
   document.getElementById('progress-card').classList.add('active');
-  if (state.pollInterval) clearInterval(state.pollInterval);
-  state.pollInterval = setInterval(pollStatus, 2000);
-  stat.textContent = '';
+  if (d.queue_pos > 0) {
+    stat.textContent = `Queued at position ${d.queue_pos + 1}`;
+  } else {
+    stat.textContent = '';
+  }
   btn.disabled = false; btn.textContent = 'Generate Short';
+  _stopJobMonitor();
+  _connectSSE(d.job_id);
 }
 
 export async function pollStatus() {
+  // Fallback for browsers without EventSource support
   if (!state.currentJobId) return;
   try {
     const r = await fetch(`/api/status/${state.currentJobId}`);
@@ -139,20 +216,12 @@ export async function pollStatus() {
     }
 
     if (d.status === 'done') {
-      clearInterval(state.pollInterval);
-      animatePulse(false);
-      resetGenBtn();
-      state.currentResult = d.result;
-      showResult(d.result);
-      toast('Video generated successfully.', 'ok', 5000);
+      _onJobDone(d.result);
     } else if (d.status === 'error') {
-      clearInterval(state.pollInterval);
-      animatePulse(false);
-      resetGenBtn();
-      toast('Pipeline error: ' + (d.error || 'Unknown error'), 'error', 8000);
-      appendLog('[ERR] ' + (d.error || 'Unknown error'));
+      _onJobError(d.error);
     }
   } catch(e) {
+    console.error('[pollStatus]', e);
   }
 }
 
@@ -204,28 +273,44 @@ export async function loadOutputs() {
         ${(m.views||0).toLocaleString()} views · CTR ${ctr}% · AVD ${avp}%
       </div>`;
     }
+    const safeName  = escapeHTML(v.name);
+    const safeThumb = v.thumbnail ? escapeHTML(v.thumbnail) : '';
     return `
     <div class="output-card">
       ${v.thumbnail
-        ? `<img class="output-thumb" src="/api/outputs/thumbnail/${v.thumbnail}" alt="thumbnail" loading="lazy">`
+        ? `<img class="output-thumb" src="/api/outputs/thumbnail/${safeThumb}" alt="thumbnail" loading="lazy">`
         : `<div class="output-thumb-placeholder">${icon('film', 32)}</div>`}
       <div class="output-info">
-        <div class="output-name">${vidName}</div>
-        <div class="output-meta">${v.size_mb} MB &nbsp;·&nbsp; ${v.created}</div>
+        <div class="output-name">${escapeHTML(vidName)}</div>
+        <div class="output-meta">${escapeHTML(String(v.size_mb))} MB &nbsp;·&nbsp; ${escapeHTML(v.created)}</div>
         ${perf}
         <div class="output-actions">
-          <a href="/api/outputs/download/${v.name}" class="btn btn-primary btn-sm" download>
+          <a href="/api/outputs/download/${safeName}" class="btn btn-primary btn-sm" download>
             ↓ Download
           </a>
-          ${v.thumbnail ? `<a href="/api/outputs/thumbnail/${v.thumbnail}" class="btn btn-ghost btn-sm" title="Download thumbnail" download>${icon('image')}</a>` : ''}
-          <button class="btn btn-gold btn-sm" onclick="ytUploadVideo('${v.name}')" title="Upload to YouTube">${icon('upload')} YT</button>
-          <button class="btn btn-ghost btn-sm" onclick="reviewVideo('${v.name}')" title="LLM performance review">${icon('search')}</button>
-          <button class="btn btn-danger btn-sm" onclick="deleteOutput('${v.name}')" title="Delete">${icon('trash')}</button>
+          ${v.thumbnail ? `<a href="/api/outputs/thumbnail/${safeThumb}" class="btn btn-ghost btn-sm" title="Download thumbnail" download>${icon('image')}</a>` : ''}
+          <button class="btn btn-gold btn-sm" data-action="yt-upload" data-video="${safeName}" title="Upload to YouTube">${icon('upload')} YT</button>
+          <button class="btn btn-ghost btn-sm" data-action="review-video" data-video="${safeName}" title="LLM performance review">${icon('search')}</button>
+          <button class="btn btn-danger btn-sm" data-action="delete-output" data-video="${safeName}" title="Delete">${icon('trash')}</button>
         </div>
       </div>
     </div>
   `;
   }).join('');
+
+  // Event delegation — attach once; no inline onclick with dynamic data
+  if (!grid.dataset.delegated) {
+    grid.dataset.delegated = '1';
+    grid.addEventListener('click', e => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      const action = btn.dataset.action;
+      const video  = btn.dataset.video;
+      if (action === 'yt-upload')      ytUploadVideo(video);
+      else if (action === 'review-video')  reviewVideo(video);
+      else if (action === 'delete-output') deleteOutput(video);
+    });
+  }
 }
 
 export async function refreshAnalytics() {

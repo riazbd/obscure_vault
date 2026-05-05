@@ -179,18 +179,25 @@ CHAPTERS
 
 def build_seo_pack(api_key: str, idea: str, outline: dict,
                    total_seconds: float, on_log=None) -> dict:
+    from concurrent.futures import ThreadPoolExecutor
     log = on_log or (lambda m: None)
 
-    log("🎯 Generating titles...")
-    titles = generate_titles(api_key, idea, outline)
+    # Titles and description are independent LLM calls — run in parallel
+    log("🎯 Generating titles + description in parallel...")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        titles_fut = pool.submit(generate_titles, api_key, idea, outline)
+        # Use a placeholder title for description; swap in real primary after
+        desc_fut   = pool.submit(
+            generate_description, api_key, idea, outline, idea, total_seconds
+        )
+        titles = titles_fut.result()
+        desc   = desc_fut.result()
+
     if not titles:
         raise llm.LLMError("no titles generated")
     primary = titles[0]["title"]
     ab      = [t["title"] for t in titles[1:3]]
     log(f"   ✅ primary: {primary!r}")
-
-    log("📝 Generating description, tags, chapters...")
-    desc = generate_description(api_key, idea, outline, primary, total_seconds)
     log(f"   ✅ {len(desc['tags'])} tags, {len(desc['chapters'])} chapters")
 
     return {

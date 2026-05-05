@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 import requests
 
 import llm
+from engines.utils import tokens as _tokens, jaccard as _jaccard
 
 
 BASE_DIR  = Path(__file__).resolve().parent.parent
@@ -105,19 +106,6 @@ def _normalize(title: str) -> str:
     t = re.sub(r"[^a-z0-9\s]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
-
-
-def _tokens(title: str) -> set[str]:
-    stop = {"the","a","an","of","and","in","on","at","to","for","with",
-            "is","was","were","what","why","how","that","this","these",
-            "those","but","or","by","from","be","been","being"}
-    return {w for w in _normalize(title).split() if len(w) > 2 and w not in stop}
-
-
-def _jaccard(a: set[str], b: set[str]) -> float:
-    if not a or not b:
-        return 0.0
-    return len(a & b) / len(a | b)
 
 
 def _id_for(title: str) -> str:
@@ -434,6 +422,10 @@ def run_harvest(
 
     with _LOCK:
         all_ideas = _load()
+        # Re-check IDs: a concurrent harvest may have added some while we
+        # were scoring with LLM (which runs outside this lock).
+        existing_ids = {it["id"] for it in all_ideas}
+        fresh = [it for it in fresh if it["id"] not in existing_ids]
         all_ideas.extend(fresh)
         # Sort the merged list by status (pending first), then niche_fit desc
         order_status = {"pending": 0, "approved": 1, "produced": 2,

@@ -23,7 +23,9 @@ _INIT_DONE = False
 
 
 def _conn():
-    c = sqlite3.connect(str(DB_PATH), timeout=10, isolation_level=None)
+    # isolation_level="" (default) means sqlite3 manages BEGIN/COMMIT automatically;
+    # "with c:" becomes a real transaction rather than a no-op in autocommit mode.
+    c = sqlite3.connect(str(DB_PATH), timeout=10, isolation_level="")
     c.execute("PRAGMA journal_mode = WAL")
     c.execute("PRAGMA synchronous = NORMAL")
     c.row_factory = sqlite3.Row
@@ -106,23 +108,12 @@ def upsert_job(
         values.append(json.dumps(result, ensure_ascii=False))
 
     with _LOCK, _conn() as c:
-        # Try update; if no row, insert
+        # Ensure row exists; then UPDATE only the supplied fields.
+        # INSERT OR IGNORE + UPDATE is atomic within the same transaction.
+        c.execute("INSERT OR IGNORE INTO jobs (id) VALUES (?)", (job_id,))
         if fields:
             sets = ", ".join(f"{f} = ?" for f in fields)
-            row  = c.execute(
-                f"UPDATE jobs SET {sets} WHERE id = ?",
-                (*values, job_id),
-            )
-            if row.rowcount == 0:
-                cols = ["id"] + fields
-                vals = [job_id] + values
-                placeholders = ", ".join("?" for _ in cols)
-                c.execute(
-                    f"INSERT INTO jobs ({', '.join(cols)}) VALUES ({placeholders})",
-                    vals,
-                )
-        else:
-            c.execute("INSERT OR IGNORE INTO jobs (id) VALUES (?)", (job_id,))
+            c.execute(f"UPDATE jobs SET {sets} WHERE id = ?", (*values, job_id))
 
 
 def append_log(job_id: str, line: str) -> None:

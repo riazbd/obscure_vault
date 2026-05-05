@@ -1,6 +1,7 @@
 export const state = {
   currentJobId: null,
-  pollInterval: null,
+  eventSource: null,   // active EventSource for main job (SSE)
+  pollInterval: null,  // fallback polling interval (used when SSE unavailable)
   lastLogLength: 0,
   currentResult: null,
   aiScriptPoll: null,

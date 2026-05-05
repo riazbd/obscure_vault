@@ -327,27 +327,35 @@ def generate(api_key: str, title: str, out_path: Path,
     log(f"      ↳ {img_prompt[:120]}{'...' if len(img_prompt) > 120 else ''}")
 
     bg_w, bg_h = (1080, 1920) if vertical else (1280, 720)
+    n_variants = max(1, variants)
 
-    written = []
-    for i in range(max(1, variants)):
+    def _fetch_bg(i: int):
         seed = (abs(hash((title, i))) % 999983) + 1
         log(f"   📥 background v{i+1} (seed={seed})...")
         try:
-            bg = pollinations_image(img_prompt, seed=seed,
-                                    width=bg_w, height=bg_h)
+            return i, pollinations_image(img_prompt, seed=seed,
+                                         width=bg_w, height=bg_h)
         except Exception as e:
-            log(f"      ⚠️  pollinations failed: {e}")
+            log(f"      ⚠️  pollinations v{i+1} failed: {e}")
+            return i, None
+
+    # Fetch all backgrounds in parallel (each is a blocking HTTP call)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=n_variants) as pool:
+        bg_results = dict(pool.map(lambda i: _fetch_bg(i), range(n_variants)))
+
+    written = []
+    for i in range(n_variants):
+        bg = bg_results.get(i)
+        if bg is None:
             if i == 0:
                 bg = Image.new("RGB", (bg_w, bg_h), (12, 10, 14))
             else:
                 continue
 
-        if i == 0:
-            target = out_path
-        else:
-            stem = out_path.stem
-            target = out_path.with_name(f"{stem}_v{i+1}{out_path.suffix}")
-
+        target = out_path if i == 0 else out_path.with_name(
+            f"{out_path.stem}_v{i+1}{out_path.suffix}"
+        )
         compose_thumbnail(bg, punchline, out_path=target, vertical=vertical)
         log(f"      ✅ {target.name}")
         written.append(str(target))

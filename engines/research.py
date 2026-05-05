@@ -23,6 +23,7 @@ from typing import Iterable
 import requests
 
 import llm
+from engines.utils import tokens as _tokens, jaccard as _jaccard
 
 
 BASE_DIR    = Path(__file__).resolve().parent.parent
@@ -272,23 +273,6 @@ Return JSON: {{"claims": ["claim 1", "claim 2", ...]}}
 # ════════════════════════════════════════════════════════
 #  Dedup
 # ════════════════════════════════════════════════════════
-
-_STOP = {"the","a","an","of","and","in","on","at","to","for","with",
-         "is","was","were","what","why","how","that","this","these",
-         "those","but","or","by","from","be","been","being","its",
-         "it","not","also","more","than","there","their","they"}
-
-
-def _tokens(s: str) -> set[str]:
-    s = re.sub(r"[^a-z0-9\s]", " ", s.lower())
-    return {w for w in s.split() if len(w) > 2 and w not in _STOP}
-
-
-def _jaccard(a: set, b: set) -> float:
-    if not a or not b:
-        return 0.0
-    return len(a & b) / len(a | b)
-
 
 def dedup_claims(claims: list[dict], threshold: float = 0.65) -> list[dict]:
     out = []
